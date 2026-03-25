@@ -1,10 +1,6 @@
 # Personal AI preferences (not part of project)
 CLAUDE.PERSONAL.md
 
-.claude/
-.claude/*
-.claude/**
-
 # Python
 __pycache__/
 *.py[cod]
