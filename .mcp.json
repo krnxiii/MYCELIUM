@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mycelium": {
+      "command": "uv",
+      "args": ["run", "python", "mycelium/mcp/server.py"]
+    }
+  }
+}

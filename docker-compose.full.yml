@@ -1,0 +1,11 @@
+# Override for --profile full: point embeddings to local TEI container
+services:
+  mycelium:
+    environment:
+      MYCELIUM_SEMANTIC__API_BASE_URL: http://embeddings:8080
+      MYCELIUM_SEMANTIC__API_KEY: ""
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      embeddings:
+        condition: service_healthy

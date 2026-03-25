@@ -1,0 +1,37 @@
+{
+  "name": "Dark",
+  "background": "#000000",
+  "node": {
+    "types": {
+      "trait":          "#B4BEFE",
+      "concept":        "#F5E0DC",
+      "interest":       "#F38BA8",
+      "event":          "#7DC4E4",
+      "practice":       "#A6E3A1",
+      "goal":           "#B4A7D6",
+      "emotion":        "#E8506A",
+      "belief":         "#CBA6F7",
+      "skill":          "#89B4FA",
+      "body":           "#EBA0AC",
+      "resource":       "#74C7EC",
+      "recommendation": "#89DCEB",
+      "period":         "#F2CDCD",
+      "person":         "#94E2D5",
+      "place":          "#A6E3A1",
+      "community":      "#585B70",
+      "owner":          "#94E2D5",
+      "habit":          "#A6E3A1",
+      "_default":       "#6C7086"
+    },
+    "label": "#585868"
+  },
+  "edge": {
+    "color":     "#222222",
+    "highlight": "#5CE0D6"
+  },
+  "decay": {
+    "fresh": "#88c898",
+    "aging": "#d8a858",
+    "stale": "#c87878"
+  }
+}
