@@ -1,0 +1,74 @@
+name: mycelium
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: mycelium-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: ${MYCELIUM_NEO4J__USER:-neo4j}/${MYCELIUM_NEO4J__PASSWORD:-password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "512m"
+      NEO4J_server_memory_pagecache_size: "256m"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_auth__minimum__password__length: "4"
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/data:/data
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/logs:/logs
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/plugins:/var/lib/neo4j/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${MYCELIUM_NEO4J__USER:-neo4j} -p ${MYCELIUM_NEO4J__PASSWORD:-password} 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: mycelium-embeddings
+    command: --model-id BAAI/bge-m3 --port 8080
+    ports:
+      - "8090:8080"
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/embeddings:/data
+    profiles:
+      - full
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  mycelium:
+    build: .
+    container_name: mycelium-app
+    ports:
+      - "8000:8000"
+    environment:
+      MYCELIUM_NEO4J__URI: bolt://neo4j:7687
+      MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
+      MYCELIUM_SEMANTIC__PROVIDER: api
+      MYCELIUM_SEMANTIC__API_BASE_URL: ${MYCELIUM_SEMANTIC__API_BASE_URL:-https://api.deepinfra.com/v1/openai}
+      MYCELIUM_SEMANTIC__API_KEY: ${MYCELIUM_SEMANTIC__API_KEY:-}
+      # LLM: default cc-cli (works if CC CLI on host calls MCP via HTTP).
+      # For headless/VPS: set MYCELIUM_LLM__PROVIDER=litellm + API key in .env
+      MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
+      MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
+      MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    profiles:
+      - app
+      - full
+
