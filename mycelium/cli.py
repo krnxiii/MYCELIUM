@@ -1002,7 +1002,7 @@ def update() -> None:
     # 2. sync deps (only if lockfile changed)
     typer.echo("Syncing dependencies...")
     subprocess.run(
-        [sys.executable, "-m", "uv", "sync", "--extra", "mcp", "--frozen"],
+        ["uv", "sync", "--extra", "mcp", "--frozen"],
         check=False,
     )
 
