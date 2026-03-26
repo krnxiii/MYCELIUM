@@ -40,9 +40,8 @@ Like fungal mycelium threading trees together through soil — sharing nutrients
 - [Domain blueprints](#domain-blueprints)
 - [Visualization](#visualization)
 - [Architecture](#architecture)
-- [Development](#development)
 - [Configuration](#configuration)
-- [Makefile reference](#makefile-reference)
+- [Makefile](#makefile)
 
 ---
 
@@ -305,23 +304,6 @@ Two complementary ways to explore your knowledge graph:
 └────────────────────────────────────────────────────────┘
 ```
 
-### Data model
-
-```
-Signal ──extracts──→ Neuron ──SYNAPSE──→ Neuron
-  │                    │                    │
-  │                    ├─ name              ├─ name
-  │                    ├─ neuron_type       ├─ confidence
-  │                    ├─ confidence        ├─ decay_rate
-  │                    ├─ decay_rate        └─ origin (raw|derived)
-  │                    ├─ freshness
-  │                    └─ origin (raw|derived)
-  │
-  ├─ content (raw text)
-  ├─ source_type (text|file|url)
-  └─ status (pending|extracting|saved|failed)
-```
-
 ### Search pipeline
 
 ```
@@ -340,115 +322,26 @@ Supports query prefixes: `lex:` (keyword), `vec:` (semantic), `hyde:` (hypotheti
 
 ---
 
-## Development
-
-```bash
-make test           # unit + integration (no Neo4j needed for unit)
-make test-unit      # unit tests only
-make lint           # ruff + mypy
-make bench          # performance benchmarks (requires Neo4j)
-```
-
-### Project structure
-
-```
-mycelium/
-├── config.py           # Pydantic settings
-├── cli.py              # CLI (ingest, search, render, obsidian-sync, backup/restore)
-├── core/
-│   ├── mycelium.py     # Main pipeline: ingest, extract, save
-│   ├── models.py       # Neuron, Synapse, Signal, Mention
-│   ├── community.py    # Louvain community detection
-│   ├── sleep.py        # Graph health analysis
-│   └── export.py       # Subgraph export/import
-├── search/
-│   ├── search.py       # HybridSearch pipeline
-│   ├── rerankers.py    # RRF, MMR, cross-encoder, node distance
-│   └── config.py       # SearchConfig, SearchResults
-├── embedder/
-│   └── client.py       # LiteLLM + FastEmbed embedder
-├── driver/
-│   └── neo4j_driver.py # Neo4j async driver
-├── domain/
-│   ├── models.py       # DomainBlueprint Pydantic models
-│   ├── registry.py     # YAML load/save from ~/.mycelium/domains/
-│   └── matcher.py      # Trigger-based domain auto-detection
-├── agent/
-│   └── workspace.py    # Agent workspace: auto-context, memory, logs
-├── mcp/
-│   └── server.py       # MCP tools + resources
-├── vault/
-│   └── storage.py      # SHA-256 addressed file vault (cortex/ default)
-├── obsidian/
-│   ├── sync.py         # Frontmatter sync, similarity, move detection
-│   ├── relations.py    # Shared neurons + embedding similarity
-│   └── frontmatter.py  # YAML frontmatter read/write
-├── render/
-│   ├── server.py       # FastAPI + Sigma.js viewer (:8500)
-│   └── queries.py      # Cypher queries for visualization
-└── llm/
-    └── client.py       # Claude Code CLI + LiteLLM runtime
-```
-
----
-
 ## Configuration
 
-All config via environment variables (or `.env` file):
+All config via environment variables or `.env` file. See `.env.example` for the full list with comments.
 
-**Embeddings**
+Key variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MYCELIUM_SEMANTIC__PROVIDER` | `api` | `api` or `local` |
+| `MYCELIUM_SEMANTIC__PROVIDER` | `api` | Embeddings: `api` (DeepInfra) or `local` (BGE-M3) |
 | `MYCELIUM_SEMANTIC__API_KEY` | — | DeepInfra API key |
-| `MYCELIUM_SEMANTIC__API_BASE_URL` | `https://api.deepinfra.com/v1/openai` | Embedding API endpoint |
-
-**Neo4j**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MYCELIUM_NEO4J__URI` | `bolt://localhost:7687` | Neo4j connection |
-| `MYCELIUM_NEO4J__USER` | `neo4j` | Neo4j username |
-| `MYCELIUM_NEO4J__PASSWORD` | `password` | Neo4j password |
-
-**LLM & behavior**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
 | `MYCELIUM_LLM__MODEL` | `sonnet` | LLM for extraction: `sonnet` / `haiku` / `opus` |
 | `MYCELIUM_OWNER__NAME` | — | Your name (for first-person linking) |
-| `MYCELIUM_INTERACTION__LEVEL` | `balanced` | Question verbosity: `silent` / `minimal` / `balanced` / `curious` |
-
-**MCP transport**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MYCELIUM_MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
-| `MYCELIUM_MCP_HOST` | `0.0.0.0` | Bind address (HTTP only) |
-| `MYCELIUM_MCP_PORT` | `8000` | Port (HTTP only) |
-
-**Obsidian layer**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MYCELIUM_OBSIDIAN__ENABLED` | `true` | Enable Obsidian frontmatter sync |
-| `MYCELIUM_OBSIDIAN__PROJECT_NEURONS` | `false` | Project neurons as .md files in vault/neurons/ |
-| `MYCELIUM_OBSIDIAN__SIMILARITY_THRESHOLD` | `0.75` | Cosine threshold for file similarity links |
-| `MYCELIUM_OBSIDIAN__MAX_SIMILAR` | `10` | Max similar files per file |
-
-**Render (Sigma.js graph viewer)**
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MYCELIUM_RENDER__ENABLED` | `false` | Enable Sigma.js graph viewer |
-| `MYCELIUM_RENDER__PORT` | `8500` | Viewer port |
+| `MYCELIUM_RENDER__ENABLED` | `false` | Enable Sigma.js graph viewer (`:8500`) |
+| `MYCELIUM_MCP__TRANSPORT` | `stdio` | `stdio` or `streamable-http` |
 
 > **HTTP transport:** Scenarios 2 and 3 run MCP over HTTP (port 8000). Manual registration: `claude mcp add -t http -s user mycelium http://localhost:8000/mcp`
 
 ---
 
-## Makefile reference
+## Makefile
 
 | Target | Description |
 |--------|-------------|
@@ -457,16 +350,10 @@ All config via environment variables (or `.env` file):
 | `make quickstart-docker` | Full Docker setup with local embeddings |
 | `make up` / `make down` | Start / stop Neo4j |
 | `make reset` | Wipe Neo4j data and restart |
-| `make test` | Run tests |
-| `make lint` | Ruff + mypy |
-| `make mcp-install` | Register MCP server in Claude Code (stdio) |
-| `make mcp-install-http` | Register MCP server in Claude Code (HTTP) |
-| `make serve` | Start MCP server |
-| `make render` | Start Sigma.js graph viewer (requires `MYCELIUM_RENDER__ENABLED=true`) |
 | `make uninstall` | Remove everything |
 
 ---
 
 ## License
 
-Private. All rights reserved.
+[MIT](LICENSE)

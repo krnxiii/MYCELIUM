@@ -2,6 +2,7 @@
 name = "mycelium"
 version = "0.1.0"
 description = "Distributed OS for collective consciousness"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "neo4j>=5.18",

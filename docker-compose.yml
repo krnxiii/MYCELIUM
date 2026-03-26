@@ -55,7 +55,7 @@ services:
       MYCELIUM_SEMANTIC__API_BASE_URL: ${MYCELIUM_SEMANTIC__API_BASE_URL:-https://api.deepinfra.com/v1/openai}
       MYCELIUM_SEMANTIC__API_KEY: ${MYCELIUM_SEMANTIC__API_KEY:-}
       # LLM: default cc-cli (works if CC CLI on host calls MCP via HTTP).
-      # For headless/VPS: set MYCELIUM_LLM__PROVIDER=litellm + API key in .env
+      # For headless/VPS: set MYCELIUM_LLM__PROVIDER=api + API key in .env
       MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
       MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
