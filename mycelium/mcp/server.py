@@ -1061,6 +1061,7 @@ async def impl_create_domain(
     tracking_fields: str = "",
     tracking_fields_json: str = "",
     analysis:      str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     if load_domain(name):
         return {"error": f"Domain '{name}' already exists. Use update_domain."}
@@ -1072,9 +1073,16 @@ async def impl_create_domain(
     tf: dict[str, FieldConfig] | list[str] = []
     if tracking_fields_json:
         import json
-        tf = json.loads(tracking_fields_json)  # dict[str, dict] → validator coerces
+        tf = json.loads(tracking_fields_json)
     elif tracking_fields:
         tf = [t.strip() for t in tracking_fields.split(",") if t.strip()]
+
+    # chart style
+    from mycelium.domain.models import ChartStyle
+    cs = ChartStyle()
+    if chart_style_json:
+        import json
+        cs = ChartStyle(**json.loads(chart_style_json))
 
     bp = DomainBlueprint(
         name          = name,
@@ -1084,7 +1092,7 @@ async def impl_create_domain(
         anchor_type   = anchor_type or "domain",
         triggers      = trigger_list,
         extraction    = ExtractionConfig(skill=skill, focus=focus, neuron_types=nt_list),
-        tracking      = TrackingConfig(fields=tf, analysis=analysis),
+        tracking      = TrackingConfig(fields=tf, analysis=analysis, chart_style=cs),
     )
     path = save_domain_bp(bp)
     return {"status": "created", "name": name, "path": str(path)}
@@ -1104,6 +1112,7 @@ async def impl_update_domain(
     tracking_fields: str = "",
     tracking_fields_json: str = "",
     analysis:      str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     existing = load_domain(name)
     if not existing:
@@ -1128,6 +1137,10 @@ async def impl_update_domain(
             [t.strip() for t in tracking_fields.split(",") if t.strip()],
         )
     if analysis:      existing.tracking.analysis = analysis
+    if chart_style_json:
+        import json
+        from mycelium.domain.models import ChartStyle
+        existing.tracking.chart_style = ChartStyle(**json.loads(chart_style_json))
 
     path = save_domain_bp(existing)
     return {"status": "updated", "name": name, "path": str(path)}
@@ -1241,6 +1254,7 @@ async def impl_get_metrics(
     if bp.tracking.dashboard and bp.tracking.fields:
         dash_path = generate_dashboard(
             vault_root, prefix, bp.name, bp.tracking.fields, entries,
+            chart_style=bp.tracking.chart_style,
         )
 
     return {
@@ -1759,6 +1773,7 @@ async def create_domain(
     tracking_fields: str = "",
     tracking_fields_json: str = "",
     analysis:        str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     """Create a new domain blueprint.
 
@@ -1779,12 +1794,13 @@ async def create_domain(
         tracking_fields: Comma-separated field names (simple mode).
         tracking_fields_json: JSON dict of structured fields with labels, aliases, references.
         analysis:        Analysis instruction for trend detection.
+        chart_style_json: JSON chart style: {"type","color","show_point","point_size","height"}.
     """
     if g := _gate("write"): return g
     return await impl_create_domain(
         name, description, vault_prefix, anchor_neuron, anchor_type,
         triggers, skill, focus, neuron_types, tracking_fields,
-        tracking_fields_json, analysis,
+        tracking_fields_json, analysis, chart_style_json,
     )
 
 
@@ -1803,6 +1819,7 @@ async def update_domain(
     tracking_fields: str = "",
     tracking_fields_json: str = "",
     analysis:        str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     """Update an existing domain blueprint.
 
@@ -1822,12 +1839,13 @@ async def update_domain(
         tracking_fields: Comma-separated field names (simple mode, replaces all).
         tracking_fields_json: JSON dict of structured fields (replaces all).
         analysis:        New analysis instruction (if provided).
+        chart_style_json: JSON chart style (replaces all).
     """
     if g := _gate("write"): return g
     return await impl_update_domain(
         name, description, vault_prefix, anchor_neuron, anchor_type,
         anchor_uuid, triggers, skill, focus, neuron_types,
-        tracking_fields, tracking_fields_json, analysis,
+        tracking_fields, tracking_fields_json, analysis, chart_style_json,
     )
 
 

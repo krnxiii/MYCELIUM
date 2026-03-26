@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from mycelium.domain.models import FieldConfig
+from mycelium.domain.models import ChartStyle, FieldConfig
 from mycelium.obsidian import frontmatter as fm
 
 _NUM_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -223,6 +223,7 @@ def generate_dashboard(
     fields:       dict[str, FieldConfig],
     entries:       list[dict],
     max_rows:      int = 30,
+    chart_style:   ChartStyle | None = None,
 ) -> Path:
     """Generate/update dashboard.md with plain table + Tracker blocks."""
     data_dir = _data_dir(vault_root, vault_prefix)
@@ -262,10 +263,22 @@ def generate_dashboard(
     lines.append("---\n")
     lines.append("*Charts below require [Tracker plugin](https://github.com/pyrochlore/obsidian-tracker)*\n")
     prefix_data = vault_prefix.rstrip("/") + "/data"
+    cs = chart_style or ChartStyle()
     for n in field_names:
         label = field_labels[n]
-        lines.append(f"```tracker\nsearchType: frontmatter\nsearchTarget: {n}\n"
-                      f"folder: {prefix_data}\nline:\n  title: \"{label}\"\n```\n")
+        lines.append(
+            f"```tracker\n"
+            f"searchType: frontmatter\n"
+            f"searchTarget: {n}\n"
+            f"folder: {prefix_data}\n"
+            f"{cs.type}:\n"
+            f"  title: \"{label}\"\n"
+            f"  lineColor: \"{cs.color}\"\n"
+            f"  showPoint: {'true' if cs.show_point else 'false'}\n"
+            f"  pointSize: {cs.point_size}\n"
+            f"  fillGap: true\n"
+            f"```\n"
+        )
 
     path.write_text("\n".join(lines), encoding="utf-8")
     return path

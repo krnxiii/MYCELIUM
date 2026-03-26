@@ -31,14 +31,27 @@ class FieldConfig(BaseModel):
     reference: list[float] | None = None  # [min, max] normal range
 
 
+class ChartStyle(BaseModel):
+    """Visual style for Tracker plugin charts."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type:       str  = "line"      # line | bar | scatter
+    color:      str  = "#89b4fa"   # Catppuccin blue
+    show_point: bool = True
+    point_size: int  = 5
+    height:     int  = 200
+
+
 class TrackingConfig(BaseModel):
     """What to track over time in this domain."""
 
     model_config = ConfigDict(extra="ignore")
 
-    fields:    dict[str, FieldConfig] = Field(default_factory=dict)
-    analysis:  str                    = ""
-    dashboard: bool                   = True
+    fields:      dict[str, FieldConfig] = Field(default_factory=dict)
+    analysis:    str                    = ""
+    dashboard:   bool                   = True
+    chart_style: ChartStyle             = Field(default_factory=ChartStyle)
 
     @field_validator("fields", mode="before")
     @classmethod
