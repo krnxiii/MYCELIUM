@@ -1,5 +1,11 @@
-# Personal AI preferences (not part of project)
+# Personal / dev-only (synced locally, not pushed)
 CLAUDE.PERSONAL.md
+docs/
+tests/
+
+# Claude Code (personal, not distributable)
+.claude/settings.local.json
+.claude/hooks/
 
 # Python
 __pycache__/
