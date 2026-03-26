@@ -971,5 +971,43 @@ def vault_check() -> None:
         typer.echo(f"  Orphaned:      {orphaned} (path missing)")
 
 
+@app.command()
+def update() -> None:
+    """Pull latest code, sync deps, and verify system."""
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    os.chdir(root)
+
+    # 1. git pull
+    typer.echo("Pulling latest code...")
+    r = subprocess.run(["git", "pull"], capture_output=True, text=True)
+    typer.echo(r.stdout.strip() or r.stderr.strip())
+    if r.returncode != 0:
+        typer.echo("git pull failed.", err=True)
+        raise typer.Exit(1)
+
+    if "Already up to date" in (r.stdout or ""):
+        typer.echo("No updates.")
+        raise typer.Exit(0)
+
+    # 2. sync deps (only if lockfile changed)
+    typer.echo("Syncing dependencies...")
+    subprocess.run(
+        [sys.executable, "-m", "uv", "sync", "--extra", "mcp", "--frozen"],
+        check=False,
+    )
+
+    # 3. verify import
+    typer.echo("Verifying...")
+    try:
+        from mycelium import __version__ as v
+        typer.echo(f"MYCELIUM {v} — updated. Restart Claude Code session to apply.")
+    except Exception as e:
+        typer.echo(f"Import check failed: {e}", err=True)
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

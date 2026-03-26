@@ -36,12 +36,15 @@ If domain name is provided as argument, use it. Otherwise ask:
 Based on the domain, ask the most relevant subset of:
 1. "What format will the files be in?" (PDF, photos, text, mixed)
 2. "What specific data points matter most?"
-3. "How often will you add new data?"
-4. "What insights do you want to get over time?"
-5. "Any specific keywords that identify this type of content?"
+3. "Do you need to track numeric metrics over time?" (weight, reps, biomarkers)
+4. "How often will you add new data?"
+5. "What insights do you want to get over time?"
+6. "Any specific keywords that identify this type of content?"
 
-Adapt questions to the domain — blood tests need different questions
-than book notes or financial records.
+Adapt questions to the domain. Do NOT ask about tracking if the answer
+is obvious from context ("track my workouts" → clearly tracking).
+If user provides an example file (e.g., blood test PDF), parse it to
+auto-extract field names, units, and reference ranges.
 
 **Step 3: Generate blueprint**
 
@@ -54,7 +57,39 @@ From the answers, determine:
 - `triggers` — 3-7 keywords for auto-detection
 - `extraction.focus` — domain-specific extraction instructions
 - `extraction.neuron_types` — expected neuron types
-- `tracking.fields` — attribute fields to track over time
+
+**If tracking metrics (numeric data over time):**
+
+Set `tracking.fields` as a structured dict. Each field has:
+- `label` — human-readable name with units (e.g., "Bench press (kg)")
+- `aliases` — words the parser matches in text, include Russian + English
+  (e.g., ["жим", "bench", "жим лёжа"])
+- `reference` — optional [min, max] normal range (e.g., [120, 160] for hemoglobin)
+
+Use `tracking_fields_json` parameter (JSON string) in `create_domain`.
+
+Example for fitness domain:
+```json
+{
+  "bench_press": {"label": "Bench press (kg)", "aliases": ["жим", "bench", "жим лёжа"]},
+  "squat": {"label": "Squat (kg)", "aliases": ["присед", "squat"]},
+  "duration": {"label": "Duration (min)", "aliases": ["время", "минут", "мин"]}
+}
+```
+
+Set `tracking.analysis` for trend instructions.
+Set `tracking.dashboard` to true (default) to auto-generate dashboard.
+
+For large field sets (e.g., blood tests with 100 params):
+- Group by category, propose which to track
+- Ask user to confirm or filter groups
+- Include reference ranges from example data
+
+**If NOT tracking (regular knowledge domain):**
+
+Leave `tracking.fields` empty. The domain will use standard
+extraction pipeline via `/mycelium-ingest`.
+
 - `tracking.analysis` — analysis instruction for trends
 
 **Step 4: Confirm with user**
@@ -78,10 +113,11 @@ Domain "{name}" created:
   Vault:     {vault_prefix}
   Anchor:    {anchor_neuron} ({anchor_uuid})
   Triggers:  {triggers}
-
-Files matching triggers will be auto-detected during /mycelium-ingest.
-Or use: /mycelium-ingest --domain {slug} <file_path>
+  Tracking:  {fields count} fields (if tracking domain)
 ```
+
+If tracking domain: "Use /track to log metrics. Use get_metrics to see trends."
+If knowledge domain: "Files matching triggers auto-detected during /mycelium-ingest."
 
 ## Extraction Skill
 

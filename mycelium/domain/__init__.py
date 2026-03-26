@@ -1,11 +1,11 @@
 """Domain Blueprints: adaptive knowledge domains (R7)."""
 
-from mycelium.domain.models   import DomainBlueprint, ExtractionConfig, TrackingConfig
+from mycelium.domain.models   import DomainBlueprint, ExtractionConfig, FieldConfig, TrackingConfig
 from mycelium.domain.registry import load_all, load_by_name, save, delete
 from mycelium.domain.matcher  import match_domain
 
 __all__ = [
-    "DomainBlueprint", "ExtractionConfig", "TrackingConfig",
+    "DomainBlueprint", "ExtractionConfig", "FieldConfig", "TrackingConfig",
     "load_all", "load_by_name", "save", "delete",
     "match_domain",
 ]
