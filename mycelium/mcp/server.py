@@ -26,9 +26,14 @@ from mycelium.core.skills import list_skills, save_skill
 from mycelium.domain import (
     load_all as load_domains, load_by_name as load_domain,
     save as save_domain_bp, delete as delete_domain_bp,
-    DomainBlueprint, ExtractionConfig, TrackingConfig,
+    DomainBlueprint, ExtractionConfig, FieldConfig, TrackingConfig,
+    match_domain,
 )
 from mycelium.domain.registry import to_compact_list
+from mycelium.domain.tracking import (
+    template_parse, write_metric_file, read_metric_files,
+    generate_dashboard, compute_stats,
+)
 from mycelium.core.sleep import build_sleep_report
 from mycelium.core.telemetry import Telemetry
 from mycelium.utils.decay import calc_decay_rate, consolidate, effective_weight
@@ -1054,14 +1059,30 @@ async def impl_create_domain(
     focus:         str = "",
     neuron_types:  str = "",
     tracking_fields: str = "",
+    tracking_fields_json: str = "",
     analysis:      str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     if load_domain(name):
         return {"error": f"Domain '{name}' already exists. Use update_domain."}
 
     trigger_list = [t.strip() for t in triggers.split(",") if t.strip()] if triggers else []
     nt_list      = [t.strip() for t in neuron_types.split(",") if t.strip()] if neuron_types else []
-    tf_list      = [t.strip() for t in tracking_fields.split(",") if t.strip()] if tracking_fields else []
+
+    # tracking fields: structured JSON takes priority over comma-separated
+    tf: dict[str, FieldConfig] | list[str] = []
+    if tracking_fields_json:
+        import json
+        tf = json.loads(tracking_fields_json)
+    elif tracking_fields:
+        tf = [t.strip() for t in tracking_fields.split(",") if t.strip()]
+
+    # chart style
+    from mycelium.domain.models import ChartStyle
+    cs = ChartStyle()
+    if chart_style_json:
+        import json
+        cs = ChartStyle(**json.loads(chart_style_json))
 
     bp = DomainBlueprint(
         name          = name,
@@ -1071,7 +1092,7 @@ async def impl_create_domain(
         anchor_type   = anchor_type or "domain",
         triggers      = trigger_list,
         extraction    = ExtractionConfig(skill=skill, focus=focus, neuron_types=nt_list),
-        tracking      = TrackingConfig(fields=tf_list, analysis=analysis),
+        tracking      = TrackingConfig(fields=tf, analysis=analysis, chart_style=cs),
     )
     path = save_domain_bp(bp)
     return {"status": "created", "name": name, "path": str(path)}
@@ -1089,7 +1110,9 @@ async def impl_update_domain(
     focus:         str = "",
     neuron_types:  str = "",
     tracking_fields: str = "",
+    tracking_fields_json: str = "",
     analysis:      str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     existing = load_domain(name)
     if not existing:
@@ -1106,9 +1129,18 @@ async def impl_update_domain(
     if focus:         existing.extraction.focus   = focus
     if neuron_types:
         existing.extraction.neuron_types = [t.strip() for t in neuron_types.split(",") if t.strip()]
-    if tracking_fields:
-        existing.tracking.fields = [t.strip() for t in tracking_fields.split(",") if t.strip()]
+    if tracking_fields_json:
+        import json
+        existing.tracking.fields = TrackingConfig._coerce_fields(json.loads(tracking_fields_json))
+    elif tracking_fields:
+        existing.tracking.fields = TrackingConfig._coerce_fields(
+            [t.strip() for t in tracking_fields.split(",") if t.strip()],
+        )
     if analysis:      existing.tracking.analysis = analysis
+    if chart_style_json:
+        import json
+        from mycelium.domain.models import ChartStyle
+        existing.tracking.chart_style = ChartStyle(**json.loads(chart_style_json))
 
     path = save_domain_bp(existing)
     return {"status": "updated", "name": name, "path": str(path)}
@@ -1118,6 +1150,120 @@ async def impl_delete_domain(name: str) -> dict[str, Any]:
     if delete_domain_bp(name):
         return {"status": "deleted", "name": name}
     return {"error": f"Domain '{name}' not found."}
+
+
+async def impl_track(
+    input_text: str,
+    domain:     str = "",
+    date:       str = "",
+) -> dict[str, Any]:
+    """Parse metrics from input and write to vault MD file."""
+    from datetime import datetime as dt, timezone as tz
+    sett = load_settings()
+
+    # resolve date
+    if not date:
+        date = dt.now(tz.utc).strftime("%Y-%m-%d")
+
+    # resolve domain
+    bp = None
+    if domain:
+        bp = load_domain(domain)
+        if not bp:
+            return {"error": f"Domain '{domain}' not found."}
+    else:
+        # auto-detect by triggers
+        domains = load_domains()
+        bp = match_domain(domains, content=input_text)
+
+    vault_root = sett.vault.path
+
+    if bp and bp.tracking.fields:
+        # domain tracking mode
+        values, body = template_parse(input_text, bp.tracking.fields)
+        if not values:
+            return {"error": "No metrics parsed. Check field aliases in domain."}
+        prefix = bp.vault_prefix or f"metrics/{bp.name}/"
+        path   = write_metric_file(vault_root, prefix, date, values, body)
+        rel    = str(path.relative_to(vault_root))
+        return {
+            "status":  "tracked",
+            "file":    rel,
+            "date":    date,
+            "values":  values,
+            "body":    body,
+            "domain":  bp.name,
+        }
+
+    # quick mode: no domain — parse "<name> <number>"
+    parts = input_text.strip().split(None, 1)
+    if len(parts) >= 2:
+        import re
+        name_part = parts[0].lower().replace("-", "_")
+        num_match = re.search(r"[-+]?\d+(?:[.,]\d+)?", parts[1])
+        if num_match:
+            val    = float(num_match.group().replace(",", "."))
+            prefix = f"metrics/{name_part}/"
+            path   = write_metric_file(vault_root, prefix, date, {name_part: val})
+            rel    = str(path.relative_to(vault_root))
+            return {
+                "status":  "tracked",
+                "file":    rel,
+                "date":    date,
+                "values":  {name_part: val},
+                "body":    "",
+                "domain":  None,
+                "hint":    "Quick mode. Use /mycelium-domain to set up full tracking.",
+            }
+
+    return {"error": "Could not parse metrics. Use: /track <name> <value> or set up a domain."}
+
+
+async def impl_get_metrics(
+    domain: str,
+    period: str = "30d",
+    field:  str = "",
+) -> dict[str, Any]:
+    """Read metrics from vault and return table + stats."""
+    from pathlib import Path as P
+    sett       = load_settings()
+    vault_root = sett.vault.path
+
+    bp = load_domain(domain)
+    if not bp:
+        # check quick-mode folder
+        quick_dir = vault_root / "metrics" / domain.lower().replace("-", "_") / "data"
+        if not quick_dir.exists():
+            return {"error": f"Domain '{domain}' not found and no quick metrics folder."}
+        prefix = f"metrics/{domain.lower().replace('-', '_')}/"
+        entries = read_metric_files(vault_root, prefix, period, field)
+        return {"entries": entries, "count": len(entries), "domain": domain}
+
+    prefix  = bp.vault_prefix or f"metrics/{bp.name}/"
+    entries = read_metric_files(vault_root, prefix, period, field)
+
+    # stats per field
+    stats = {}
+    for fname in bp.tracking.fields:
+        if field and fname != field:
+            continue
+        stats[fname] = compute_stats(entries, fname)
+
+    # update dashboard
+    dash_path = None
+    if bp.tracking.dashboard and bp.tracking.fields:
+        dash_path = generate_dashboard(
+            vault_root, prefix, bp.name, bp.tracking.fields, entries,
+            chart_style=bp.tracking.chart_style,
+        )
+
+    return {
+        "entries":   entries,
+        "count":     len(entries),
+        "stats":     stats,
+        "domain":    bp.name,
+        "dashboard": str(dash_path.relative_to(vault_root)) if dash_path else None,
+    }
 
 
 # ── MCP registration (thin wrappers) ─────────────────────────────
@@ -1625,12 +1771,13 @@ async def create_domain(
     focus:           str = "",
     neuron_types:    str = "",
     tracking_fields: str = "",
+    tracking_fields_json: str = "",
     analysis:        str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     """Create a new domain blueprint.
 
     Use to define a knowledge domain (e.g., "Blood Analysis", "Finances").
-    Use INSTEAD of update_domain for new domains.
     After creating: add_neuron to create the anchor, then update_domain
     with anchor_uuid.
 
@@ -1644,13 +1791,16 @@ async def create_domain(
         skill:           Extraction skill name to apply.
         focus:           Extraction focus text (injected into prompt).
         neuron_types:    Comma-separated expected neuron types.
-        tracking_fields: Comma-separated attribute fields to track.
+        tracking_fields: Comma-separated field names (simple mode).
+        tracking_fields_json: JSON dict of structured fields with labels, aliases, references.
         analysis:        Analysis instruction for trend detection.
+        chart_style_json: JSON chart style: {"type","color","show_point","point_size","height"}.
     """
     if g := _gate("write"): return g
     return await impl_create_domain(
         name, description, vault_prefix, anchor_neuron, anchor_type,
-        triggers, skill, focus, neuron_types, tracking_fields, analysis,
+        triggers, skill, focus, neuron_types, tracking_fields,
+        tracking_fields_json, analysis, chart_style_json,
     )
 
 
@@ -1667,7 +1817,9 @@ async def update_domain(
     focus:           str = "",
     neuron_types:    str = "",
     tracking_fields: str = "",
+    tracking_fields_json: str = "",
     analysis:        str = "",
+    chart_style_json: str = "",
 ) -> dict[str, Any]:
     """Update an existing domain blueprint.
 
@@ -1684,15 +1836,56 @@ async def update_domain(
         skill:           New extraction skill name (if provided).
         focus:           New extraction focus (if provided).
         neuron_types:    New comma-separated neuron types (replaces all).
-        tracking_fields: New comma-separated tracking fields (replaces all).
+        tracking_fields: Comma-separated field names (simple mode, replaces all).
+        tracking_fields_json: JSON dict of structured fields (replaces all).
         analysis:        New analysis instruction (if provided).
+        chart_style_json: JSON chart style (replaces all).
     """
     if g := _gate("write"): return g
     return await impl_update_domain(
         name, description, vault_prefix, anchor_neuron, anchor_type,
         anchor_uuid, triggers, skill, focus, neuron_types,
-        tracking_fields, analysis,
+        tracking_fields, tracking_fields_json, analysis, chart_style_json,
     )
+
+
+@mcp.tool
+async def track(
+    input: str,
+    domain: str = "",
+    date:   str = "",
+) -> dict[str, Any]:
+    """Track metrics: parse numbers from text, save as structured MD file.
+
+    Template-based parsing using domain field aliases (zero LLM cost).
+    Quick mode: if no domain matches, auto-creates minimal metric tracking.
+
+    Args:
+        input:  Text with metrics (e.g., "bench 80 squat 100 45min").
+        domain: Domain name (optional, auto-detected from triggers).
+        date:   Date override YYYY-MM-DD (default: today).
+    """
+    if g := _gate("write"): return g
+    return await impl_track(input, domain, date)
+
+
+@mcp.tool
+async def get_metrics(
+    domain: str,
+    period: str = "30d",
+    field:  str = "",
+) -> dict[str, Any]:
+    """Read tracked metrics and compute stats.
+
+    Returns entries table, stats (min/max/avg/trend), and updates dashboard.
+
+    Args:
+        domain: Domain name or quick-mode metric name.
+        period: Time window: "7d", "30d", "90d", "all" (default: "30d").
+        field:  Filter to specific field (optional, default: all).
+    """
+    if g := _gate("read"): return g
+    return await impl_get_metrics(domain, period, field)
 
 
 @mcp.tool
