@@ -980,9 +980,16 @@ def update() -> None:
     root = Path(__file__).resolve().parent.parent
     os.chdir(root)
 
-    # 1. git pull
+    # 1. fetch + pull main
     typer.echo("Pulling latest code...")
-    r = subprocess.run(["git", "pull"], capture_output=True, text=True)
+    subprocess.run(["git", "fetch", "origin"], capture_output=True)
+    current = subprocess.run(
+        ["git", "branch", "--show-current"], capture_output=True, text=True,
+    ).stdout.strip()
+    if current != "main":
+        typer.echo(f"Switching from {current} to main...")
+        subprocess.run(["git", "checkout", "main"], capture_output=True)
+    r = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
     typer.echo(r.stdout.strip() or r.stderr.strip())
     if r.returncode != 0:
         typer.echo("git pull failed.", err=True)
