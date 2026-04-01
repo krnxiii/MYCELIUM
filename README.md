@@ -11,6 +11,10 @@
   <img src="assets/logo.JPG" alt="MYCELIUM" width="280" />
 </p>
 
+<p align="center">
+  <a href="https://t.me/+93N9Kpw2PNcwYTEy"><img src="https://img.shields.io/badge/Telegram-Channel-blue?logo=telegram&style=flat-square" alt="Telegram" /></a>
+</p>
+
 Imagine every conversation with your AI agent starting not from scratch — but with full understanding of who you are, what you know, what you're working on, and what matters to you. You load documents, notes, articles, conversations. The system extracts structured knowledge, links facts to each other, stores everything locally on your machine. Your agent reads this graph as a native language: finding context, surfacing connections, personalizing every response.
 
 Every neuron and synapse is embedded into a shared semantic space — vectors where meaning, not just words, determines proximity. Combined with graph architecture, this lets MYCELIUM find not only what you explicitly stored, but what relates to it, what it implies, and what hidden patterns emerge across your entire knowledge network.
