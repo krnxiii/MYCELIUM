@@ -136,6 +136,7 @@ class MCPSettings(BaseModel):
     transport:          str  = "stdio"   # stdio | streamable-http
     host:               str  = "0.0.0.0"
     port:               int  = 8000
+    auth_token:         str  = ""        # empty = no auth (local); set for HTTP
 
 
 class ObsidianSettings(BaseModel):

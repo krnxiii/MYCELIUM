@@ -244,11 +244,18 @@ def serve(
     transport = transport or cfg.transport
     host      = host or cfg.host
     port      = port or cfg.port
+    auth_token = cfg.auth_token
     try:
         from mycelium.mcp.server import mcp as mcp_server
     except ImportError as exc:
         typer.echo("fastmcp not installed. pip install mycelium[mcp]", err=True)
         raise typer.Exit(1) from exc
+    # Bearer token auth for HTTP transport
+    if auth_token and transport != "stdio":
+        from fastmcp.server.auth import StaticTokenVerifier
+        mcp_server.auth = StaticTokenVerifier(
+            tokens={auth_token: {"client_id": "mycelium", "scopes": ["read", "write"]}},
+        )
     if transport == "stdio":
         mcp_server.run()
     else:

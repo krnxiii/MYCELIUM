@@ -1,4 +1,4 @@
-.PHONY: install install-full up down reset quickstart quickstart-app quickstart-docker test test-unit test-semantic bench lint mcp-server mcp-install mcp-install-http mcp-gate-init mcp-skills-install mcp-rules-install serve render clean uninstall
+.PHONY: install install-full up down reset quickstart quickstart-app quickstart-docker quickstart-vps vps-up vps-down mcp-install-remote test test-unit test-semantic bench lint mcp-server mcp-install mcp-install-http mcp-gate-init mcp-skills-install mcp-rules-install serve render clean uninstall
 
 # ── Installation ────────────────────────────────────────────────
 #
@@ -6,6 +6,7 @@
 #   ──────────────┼──────────────────────┼──────────────────────────
 #   App: local    │ make quickstart      │ —
 #   App: Docker   │ make quickstart-app  │ make quickstart-docker
+#   VPS (remote)  │ make quickstart-vps  │ (interactive: choose mode)
 #
 
 quickstart:
@@ -32,6 +33,31 @@ quickstart-docker:
 	$(MAKE) mcp-gate-init
 	$(MAKE) mcp-skills-install
 	@echo "Stack ready: Neo4j :7474 | TEI :8090 | MCP http://localhost:8000/mcp"
+
+# ── VPS deployment ────────────────────────────────────────────────
+
+quickstart-vps:
+	@bash scripts/install-vps.sh
+
+vps-up:
+	docker compose -f docker-compose.vps.yml up -d
+	@bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app
+
+vps-down:
+	docker compose -f docker-compose.vps.yml down
+
+mcp-install-remote:
+	@if [ -z "$(VPS_HOST)" ]; then echo "Usage: make mcp-install-remote VPS_HOST=<tailscale-ip> AUTH_TOKEN=<token>"; exit 1; fi
+	@if [ -z "$(AUTH_TOKEN)" ]; then echo "Usage: make mcp-install-remote VPS_HOST=<tailscale-ip> AUTH_TOKEN=<token>"; exit 1; fi
+	@if command -v claude >/dev/null 2>&1; then \
+		claude mcp remove mycelium -s user 2>/dev/null; \
+		claude mcp add -t http -s user \
+			--header "Authorization: Bearer $(AUTH_TOKEN)" \
+			mycelium http://$(VPS_HOST):8000/mcp; \
+		echo "MCP registered: http://$(VPS_HOST):8000/mcp (with auth)"; \
+	else \
+		echo "claude CLI not found — install Claude Code first"; \
+	fi
 
 # ── Granular install ────────────────────────────────────────────
 

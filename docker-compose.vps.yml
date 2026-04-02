@@ -1,0 +1,115 @@
+# MYCELIUM VPS deployment
+# Usage: docker compose -f docker-compose.vps.yml up -d
+# Prereq: .env with auth token, Neo4j password, embeddings config
+# Network: Tailscale mesh VPN (no public ports except Neo4j/MCP on tailscale IP)
+
+name: mycelium-vps
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: mycelium-neo4j
+    environment:
+      NEO4J_AUTH: ${MYCELIUM_NEO4J__USER:-neo4j}/${MYCELIUM_NEO4J__PASSWORD:-password}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_initial__size: "512m"
+      NEO4J_server_memory_heap_max__size: "512m"
+      NEO4J_server_memory_pagecache_size: "256m"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_auth__minimum__password__length: "4"
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/data:/data
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/logs:/logs
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/plugins:/var/lib/neo4j/plugins
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u ${MYCELIUM_NEO4J__USER:-neo4j} -p ${MYCELIUM_NEO4J__PASSWORD:-password} 'RETURN 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  mycelium:
+    build: .
+    container_name: mycelium-app
+    ports:
+      - "8000:8000"
+    environment:
+      MYCELIUM_NEO4J__URI: bolt://neo4j:7687
+      MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
+      MYCELIUM_SEMANTIC__PROVIDER: api
+      MYCELIUM_SEMANTIC__API_BASE_URL: ${MYCELIUM_SEMANTIC__API_BASE_URL:-https://api.deepinfra.com/v1/openai}
+      MYCELIUM_SEMANTIC__API_KEY: ${MYCELIUM_SEMANTIC__API_KEY:-}
+      MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
+      MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
+      MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
+      MYCELIUM_MCP__AUTH_TOKEN: ${MYCELIUM_MCP__AUTH_TOKEN:-}
+      MYCELIUM_OWNER__NAME: ${MYCELIUM_OWNER__NAME:-}
+      MYCELIUM_RENDER__ENABLED: ${MYCELIUM_RENDER__ENABLED:-false}
+      MYCELIUM_OBSIDIAN__ENABLED: ${MYCELIUM_OBSIDIAN__ENABLED:-true}
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/mcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Local TEI embeddings (optional, use --profile full)
+  embeddings:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    container_name: mycelium-embeddings
+    command: --model-id BAAI/bge-m3 --port 8080
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/embeddings:/data
+    profiles:
+      - full
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # Vault sync: VPS ↔ Laptop (via Tailscale, no relay)
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: mycelium-syncthing
+    hostname: mycelium-vps
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/var/syncthing/vault
+      - syncthing_config:/var/syncthing/config
+    ports:
+      - "8384:8384"   # Web UI (access via Tailscale only)
+      - "22000:22000" # Sync protocol
+    restart: unless-stopped
+
+  # Tailscale mesh VPN
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: mycelium-tailscale
+    hostname: mycelium-vps
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    restart: unless-stopped
+
+volumes:
+  syncthing_config:
+  tailscale_state:
