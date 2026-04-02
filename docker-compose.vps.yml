@@ -75,7 +75,7 @@ services:
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
     volumes:
       - ~/.claude:/root/.claude
-      - ~/.claude.json:/root/.claude.json:ro
+      - ~/.claude.json:/root/.claude.json
     depends_on:
       mycelium:
         condition: service_healthy

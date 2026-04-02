@@ -203,14 +203,10 @@ def _setup_agent_mcp(mcp_url: str, auth_token: str) -> None:
         ["claude", "mcp", "remove", "mycelium", "-s", "user"],
         capture_output=True, timeout=10,
     )
-    # Register with auth header
+    # Register: name + url before --header (--header is variadic)
     cmd = ["claude", "mcp", "add", "-t", "http", "-s", "user", "mycelium", mcp_url]
     if auth_token:
-        cmd = [
-            "claude", "mcp", "add", "-t", "http", "-s", "user",
-            "--header", f"Authorization: Bearer {auth_token}",
-            "mycelium", mcp_url,
-        ]
+        cmd.extend(["--header", f"Authorization: Bearer {auth_token}"])
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
     if result.returncode == 0:
         log.info("agent.mcp_registered", url=mcp_url)
