@@ -195,18 +195,27 @@ def _strip_html(text: str) -> str:
 # ── MCP registration for agent ──────────────────────────────────────
 
 def _setup_agent_mcp(mcp_url: str, auth_token: str) -> None:
-    """Register MCP server in project-level Claude settings for agent."""
-    import json
-    from pathlib import Path
+    """Register MCP server via claude CLI for agent subprocess."""
+    import subprocess
 
-    settings_dir = Path("/app/.claude")
-    settings_dir.mkdir(exist_ok=True)
-    server_cfg: dict = {"type": "http", "url": mcp_url}
+    # Remove stale registration
+    subprocess.run(
+        ["claude", "mcp", "remove", "mycelium", "-s", "user"],
+        capture_output=True, timeout=10,
+    )
+    # Register with auth header
+    cmd = ["claude", "mcp", "add", "-t", "http", "-s", "user", "mycelium", mcp_url]
     if auth_token:
-        server_cfg["headers"] = {"Authorization": f"Bearer {auth_token}"}
-    settings = {"mcpServers": {"mycelium": server_cfg}}
-    (settings_dir / "settings.json").write_text(json.dumps(settings, indent=2))
-    log.info("agent.mcp_registered", url=mcp_url)
+        cmd = [
+            "claude", "mcp", "add", "-t", "http", "-s", "user",
+            "--header", f"Authorization: Bearer {auth_token}",
+            "mycelium", mcp_url,
+        ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    if result.returncode == 0:
+        log.info("agent.mcp_registered", url=mcp_url)
+    else:
+        log.error("agent.mcp_register_failed", stderr=result.stderr[:200])
 
 
 # ── Bot lifecycle ───────────────────────────────────────────────────
