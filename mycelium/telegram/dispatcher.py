@@ -42,41 +42,49 @@ class Dispatcher:
     def __init__(self, mcp: MCPClient) -> None:
         self._mcp = mcp
 
+    # Commands that involve LLM processing (show progress)
+    _SLOW_COMMANDS = frozenset({"/capture", "/search"})
+
     async def dispatch(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         """Route message to handler, yield replies."""
         text = msg.text.strip()
         if text.startswith("/"):
-            yield await self._fast(msg)
+            async for reply in self._fast(msg):
+                yield reply
         else:
             # Phase 3: free text → claude -p
             yield ChannelReply(
                 text="Free text mode coming in Phase 3. Use /capture or /search.",
             )
 
-    async def _fast(self, msg: ChannelMessage) -> ChannelReply:
+    async def _fast(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         parts = msg.text.strip().split(maxsplit=1)
         cmd   = parts[0].lower().split("@")[0]  # strip @botname suffix
         arg   = parts[1] if len(parts) > 1 else ""
 
+        # Progress feedback for slow commands
+        if cmd in self._SLOW_COMMANDS and arg:
+            yield ChannelReply(text="Processing...")
+
         try:
             match cmd:
                 case "/capture":
-                    return await self._capture(arg)
+                    yield await self._capture(arg)
                 case "/search":
-                    return await self._search(arg)
+                    yield await self._search(arg)
                 case "/status":
-                    return await self._status()
+                    yield await self._status()
                 case "/today":
-                    return await self._today()
+                    yield await self._today()
                 case "/neurons":
-                    return await self._neurons(arg)
+                    yield await self._neurons(arg)
                 case "/domains":
-                    return await self._domains()
+                    yield await self._domains()
                 case _:
-                    return ChannelReply(text=f"Unknown command: {cmd}")
+                    yield ChannelReply(text=f"Unknown command: {cmd}")
         except Exception as exc:
             log.error("dispatcher.error", cmd=cmd, error=str(exc))
-            return ChannelReply(text=f"Error: {exc}")
+            yield ChannelReply(text=f"Error: {exc}")
 
     async def _capture(self, text: str) -> ChannelReply:
         if not text:

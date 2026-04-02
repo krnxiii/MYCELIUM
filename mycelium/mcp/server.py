@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pathlib
 import time
 from datetime import UTC, datetime
@@ -48,6 +49,9 @@ _KNOWLEDGE_DIR = pathlib.Path(__file__).resolve().parent.parent / "knowledge"
 
 _GATE_DIR.mkdir(parents=True, exist_ok=True)
 (_GATE_DIR / ".read_enabled").touch(exist_ok=True)
+# VPS/Docker: auto-enable write (trusted single-user environment)
+if os.environ.get("MYCELIUM_MCP__TRANSPORT") == "streamable-http":
+    (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
 
 
 def _gate(mode: str) -> dict | None:
