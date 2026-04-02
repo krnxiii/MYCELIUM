@@ -50,6 +50,7 @@ services:
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
       - ~/.claude:/root/.claude:ro
+      - ~/.claude.json:/root/.claude.json:ro
     depends_on:
       neo4j:
         condition: service_healthy
