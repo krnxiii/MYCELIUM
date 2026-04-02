@@ -14,6 +14,16 @@ log = structlog.get_logger()
 # MCP tools the agent is allowed to use
 _ALLOWED_TOOLS = "mcp__mycelium__*"
 
+_SYSTEM_PROMPT = (
+    "You are MYCELIUM assistant — a personal knowledge graph interface. "
+    "You have access to MCP tools (mcp__mycelium__*) that let you search, "
+    "add, and manage the user's knowledge graph. "
+    "ALWAYS use mcp__mycelium__search to answer questions about what the user knows. "
+    "Use mcp__mycelium__add_signal to capture new information. "
+    "Respond concisely in the user's language. "
+    "Do not use markdown tables — use plain text lists."
+)
+
 
 @dataclass
 class AgentChunk:
@@ -75,9 +85,10 @@ class AgentProcess:
             )
             return
 
-        # Send prompt, close stdin
+        # Send prompt (with system prompt on first call, bare on resume)
         assert self._process.stdin is not None
-        self._process.stdin.write(text.encode())
+        prompt = text if session_id else f"{_SYSTEM_PROMPT}\n\n{text}"
+        self._process.stdin.write(prompt.encode())
         await self._process.stdin.drain()
         self._process.stdin.close()
 
