@@ -8,6 +8,7 @@ from pathlib import Path
 
 import structlog
 
+from mycelium.telegram.agent import AgentProcess
 from mycelium.telegram.formatter import (
     format_domains,
     format_health,
@@ -34,13 +35,15 @@ class ChannelReply:
     text: str                          # plain text (always present)
     html: str | None         = None    # formatted (channel renders if supported)
     files: list[Path]        = field(default_factory=list)
+    is_stream: bool          = False   # True = streaming chunk (use editMessageText)
 
 
 class Dispatcher:
-    """Fast mode dispatcher: /commands → MCP HTTP tool calls."""
+    """Dispatch messages: /commands → MCP fast mode, free text → agent."""
 
-    def __init__(self, mcp: MCPClient) -> None:
-        self._mcp = mcp
+    def __init__(self, mcp: MCPClient, agent: AgentProcess) -> None:
+        self._mcp   = mcp
+        self._agent = agent
 
     # Commands that involve LLM processing (show progress)
     _SLOW_COMMANDS = frozenset({"/capture", "/search"})
@@ -52,10 +55,21 @@ class Dispatcher:
             async for reply in self._fast(msg):
                 yield reply
         else:
-            # Phase 3: free text → claude -p
+            # Full mode: free text → claude -p agent with MCP tools
+            async for reply in self._agent_stream(msg):
+                yield reply
+
+    async def _agent_stream(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
+        """Route free text to claude -p agent, yield streaming chunks."""
+        async for chunk in self._agent.run(msg.text, msg.chat_id):
             yield ChannelReply(
-                text="Free text mode coming in Phase 3. Use /capture or /search.",
+                text=chunk.text,
+                is_stream=not chunk.is_final,
             )
+
+    def abort(self) -> bool:
+        """Abort current agent process."""
+        return self._agent.abort()
 
     async def _fast(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         parts = msg.text.strip().split(maxsplit=1)

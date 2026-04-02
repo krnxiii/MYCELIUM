@@ -62,7 +62,7 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Telegram bot (fast mode: direct MCP calls, no LLM)
+  # Telegram bot (fast + full mode: MCP calls + claude -p agent)
   telegram-bot:
     build: .
     container_name: mycelium-telegram
@@ -72,6 +72,10 @@ services:
       MYCELIUM_TELEGRAM__OWNER_CHAT_ID: ${MYCELIUM_TELEGRAM__OWNER_CHAT_ID:-0}
       MYCELIUM_TELEGRAM__MCP_URL: http://mycelium:9631/mcp
       MYCELIUM_TELEGRAM__MCP_AUTH_TOKEN: ${MYCELIUM_MCP__AUTH_TOKEN:-}
+      MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
+    volumes:
+      - ~/.claude:/root/.claude
+      - ~/.claude.json:/root/.claude.json:ro
     depends_on:
       mycelium:
         condition: service_healthy
