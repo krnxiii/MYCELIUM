@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 import structlog
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
 
 log = structlog.get_logger()
@@ -34,7 +34,7 @@ class MCPClient:
         http = httpx.AsyncClient(headers=headers, timeout=30.0)
 
         read, write, _ = await self._stack.enter_async_context(
-            streamablehttp_client(self._url, http_client=http),
+            streamable_http_client(self._url, http_client=http),
         )
         self._session = await self._stack.enter_async_context(
             ClientSession(read, write),
