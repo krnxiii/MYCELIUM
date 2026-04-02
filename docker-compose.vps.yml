@@ -49,6 +49,7 @@ services:
       MYCELIUM_OBSIDIAN__ENABLED: ${MYCELIUM_OBSIDIAN__ENABLED:-true}
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
+      - ~/.claude:/root/.claude:ro
     depends_on:
       neo4j:
         condition: service_healthy

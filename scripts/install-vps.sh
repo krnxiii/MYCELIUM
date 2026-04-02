@@ -101,6 +101,64 @@ check_deps() {
     fi
 }
 
+# ── Claude Code CLI (for LLM extraction) ─────────────────────────
+setup_claude_cli() {
+    local claude_bin=""
+
+    # Find claude CLI
+    for p in claude ~/.local/bin/claude /usr/local/bin/claude; do
+        if command -v "$p" &>/dev/null || [[ -x "$p" ]]; then
+            claude_bin="$p"
+            break
+        fi
+    done
+
+    if [[ -z "$claude_bin" ]]; then
+        echo
+        info "Claude Code CLI is needed for knowledge extraction."
+        info "Without it, /capture saves signals but won't extract neurons."
+        echo
+        local install_choice
+        install_choice="$(ask "Install Claude Code CLI? [y/N]" "n")"
+        if [[ "$install_choice" =~ ^[Yy] ]]; then
+            if ! command -v npm &>/dev/null; then
+                warn "npm not found. Install Node.js first: https://nodejs.org/"
+                warn "Then run: npm install -g @anthropic-ai/claude-code && claude login"
+                return
+            fi
+            info "Installing Claude Code CLI..."
+            npm install -g @anthropic-ai/claude-code
+            claude_bin="claude"
+        else
+            warn "Skipped — extraction will be unavailable. Install later:"
+            printf "  ${DIM}npm install -g @anthropic-ai/claude-code && claude login${NC}\n"
+            return
+        fi
+    else
+        success "Claude Code CLI found: $claude_bin"
+    fi
+
+    # Check if authenticated
+    if [[ ! -d "$HOME/.claude" ]] || ! "$claude_bin" -p "echo ok" &>/dev/null 2>&1; then
+        echo
+        info "Claude Code needs authentication (opens URL in browser)."
+        local login_choice
+        login_choice="$(ask "Login now? [Y/n]" "y")"
+        if [[ "$login_choice" =~ ^[Yy]?$ ]]; then
+            "$claude_bin" login
+            if [[ $? -eq 0 ]]; then
+                success "Claude Code authenticated"
+            else
+                warn "Login failed or cancelled. Run '$claude_bin login' later."
+            fi
+        else
+            warn "Skipped — run '$claude_bin login' before using extraction."
+        fi
+    else
+        success "Claude Code authenticated"
+    fi
+}
+
 # ── Generate Auth Token ────────────────────────────────────────────
 generate_token() {
     python3 -c "import secrets; print(secrets.token_urlsafe(32))" 2>/dev/null \
@@ -270,17 +328,20 @@ main() {
     root="$(detect_project_root)"
     cd "$root"
 
-    step "1/4" "Checking dependencies"
+    step "1/5" "Checking dependencies"
     check_deps
     success "All dependencies satisfied"
 
-    step "2/4" "Configure environment"
+    step "2/5" "Claude Code CLI"
+    setup_claude_cli
+
+    step "3/5" "Configure environment"
     configure_env
 
-    step "3/4" "Deploying services"
+    step "4/5" "Deploying services"
     deploy
 
-    step "4/4" "Done!"
+    step "5/5" "Done!"
     show_summary
 }
 
