@@ -33,7 +33,7 @@ services:
     build: .
     container_name: mycelium-app
     ports:
-      - "8000:8000"
+      - "9631:9631"
     environment:
       MYCELIUM_NEO4J__URI: bolt://neo4j:7687
       MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
@@ -53,24 +53,41 @@ services:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer $MYCELIUM_MCP__AUTH_TOKEN\" http://localhost:8000/mcp | grep -qE '200|406'"]
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer $MYCELIUM_MCP__AUTH_TOKEN\" http://localhost:9631/mcp | grep -qE '200|406'"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 15s
     restart: unless-stopped
 
+  # Telegram bot (fast mode: direct MCP calls, no LLM)
+  telegram-bot:
+    build: .
+    container_name: mycelium-telegram
+    command: ["uv", "run", "mycelium", "telegram"]
+    environment:
+      MYCELIUM_TELEGRAM__BOT_TOKEN: ${MYCELIUM_TELEGRAM__BOT_TOKEN:-}
+      MYCELIUM_TELEGRAM__OWNER_CHAT_ID: ${MYCELIUM_TELEGRAM__OWNER_CHAT_ID:-0}
+      MYCELIUM_TELEGRAM__MCP_URL: http://mycelium:9631/mcp
+      MYCELIUM_TELEGRAM__MCP_AUTH_TOKEN: ${MYCELIUM_MCP__AUTH_TOKEN:-}
+    depends_on:
+      mycelium:
+        condition: service_healthy
+    profiles:
+      - telegram
+    restart: unless-stopped
+
   # Local TEI embeddings (optional, use --profile full)
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: mycelium-embeddings
-    command: --model-id BAAI/bge-m3 --port 8080
+    command: --model-id BAAI/bge-m3 --port 9632
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/embeddings:/data
     profiles:
       - full
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9632/health"]
       interval: 10s
       timeout: 5s
       retries: 10

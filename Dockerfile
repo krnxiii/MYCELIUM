@@ -6,15 +6,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf 
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --extra mcp --frozen --no-install-project
+RUN uv sync --no-dev --extra mcp --extra telegram --frozen --no-install-project
 
 COPY mycelium/ mycelium/
-RUN uv sync --no-dev --extra mcp --frozen
+RUN uv sync --no-dev --extra mcp --extra telegram --frozen
 
-EXPOSE 8000
+EXPOSE 9631
 
 ENV MYCELIUM_MCP__TRANSPORT=streamable-http
 ENV MYCELIUM_MCP__HOST=0.0.0.0
-ENV MYCELIUM_MCP__PORT=8000
+ENV MYCELIUM_MCP__PORT=9631
 
 CMD ["uv", "run", "mycelium", "serve"]

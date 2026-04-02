@@ -294,6 +294,17 @@ def signals(
     _run(_go())
 
 
+@app.command()
+def telegram() -> None:
+    """Start Telegram bot (fast mode)."""
+    try:
+        from mycelium.telegram.bot import run_bot
+    except ImportError as exc:
+        typer.echo("aiogram not installed. pip install mycelium[telegram]", err=True)
+        raise typer.Exit(1) from exc
+    _run(run_bot())
+
+
 def _ensure_neo4j() -> None:
     """Start Neo4j docker container if not running, wait for ready."""
     import shutil

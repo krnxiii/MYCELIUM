@@ -1,4 +1,4 @@
-"""Render server: FastAPI serves static + graph API on :8500."""
+"""Render server: FastAPI serves static + graph API on :9633."""
 
 from __future__ import annotations
 

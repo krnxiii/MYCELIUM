@@ -299,7 +299,7 @@ generate_env() {
     else
         # Scenario 3: local embeddings, no API key needed
         set_env_val "MYCELIUM_SEMANTIC__PROVIDER" "api"
-        set_env_val "MYCELIUM_SEMANTIC__API_BASE_URL" "http://localhost:8090"
+        set_env_val "MYCELIUM_SEMANTIC__API_BASE_URL" "http://localhost:9632"
         set_env_val "MYCELIUM_SEMANTIC__API_KEY" ""
     fi
 
@@ -332,7 +332,7 @@ generate_env() {
 
     # ── Sigma.js render (optional) ──
     echo
-    info "Sigma.js render opens the knowledge graph in a browser (localhost:8500)."
+    info "Sigma.js render opens the knowledge graph in a browser (localhost:9633)."
     info "Alternative to Obsidian Graph View — interactive, with ForceAtlas2 layout."
     local render_enabled
     render_enabled="$(ask "Enable Sigma.js graph viewer?" "y")"
@@ -414,7 +414,7 @@ register_mcp() {
     if [[ "$scenario" != "1" ]]; then
         # Docker: MCP via HTTP (container exposes :8000)
         claude mcp remove mycelium -s user 2>/dev/null || true
-        claude mcp add -t http -s user mycelium http://localhost:8000/mcp
+        claude mcp add -t http -s user mycelium http://localhost:9631/mcp
         success "MCP server registered (HTTP → localhost:8000)"
     else
         # Local dev: MCP via stdio
@@ -516,16 +516,16 @@ show_summary() {
     printf "  %-20s %s\n" "Neo4j Bolt"          "bolt://localhost:7687"
 
     if [[ "$scenario" == "2" || "$scenario" == "3" ]]; then
-        printf "  %-20s %s\n" "MCP (HTTP)" "http://localhost:8000/mcp"
+        printf "  %-20s %s\n" "MCP (HTTP)" "http://localhost:9631/mcp"
     fi
 
     if [[ "$scenario" == "3" ]]; then
-        printf "  %-20s %s\n" "TEI Embeddings" "http://localhost:8090"
+        printf "  %-20s %s\n" "TEI Embeddings" "http://localhost:9632"
     fi
 
     # Check if render is enabled in .env
     if grep -q '^MYCELIUM_RENDER__ENABLED=true' "$ENV_FILE" 2>/dev/null; then
-        printf "  %-20s %s\n" "Graph Viewer" "http://localhost:8500 (make render)"
+        printf "  %-20s %s\n" "Graph Viewer" "http://localhost:9633 (make render)"
     fi
 
     echo

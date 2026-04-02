@@ -183,20 +183,37 @@ configure_env() {
         warn "Tailscale skipped — add TAILSCALE_AUTHKEY to .env later"
     fi
 
-    # Store embeddings mode for compose profile
+    # ── Telegram bot ──
+    echo
+    info "Telegram bot gives you mobile access to the graph."
+    info "Create a bot: https://t.me/BotFather → /newbot"
+    local tg_token
+    tg_token="$(ask_secret "Telegram bot token (or empty to skip)")"
+    if [[ -n "$tg_token" ]]; then
+        set_env_val "MYCELIUM_TELEGRAM__BOT_TOKEN" "$tg_token"
+        local tg_chat_id
+        info "To find your chat_id: send /start to @userinfobot on Telegram"
+        tg_chat_id="$(ask "Your Telegram chat_id" "0")"
+        set_env_val "MYCELIUM_TELEGRAM__OWNER_CHAT_ID" "$tg_chat_id"
+    else
+        warn "Telegram skipped — add MYCELIUM_TELEGRAM__BOT_TOKEN to .env later"
+    fi
+
+    # Store embeddings mode + telegram flag for compose profiles
     echo "MYCELIUM_VPS_EMB_MODE=$emb_mode" >> "$ENV_FILE"
+    [[ -n "$tg_token" ]] && echo "MYCELIUM_VPS_TELEGRAM=1" >> "$ENV_FILE"
     success ".env configured"
 }
 
 # ── Deploy ──────────────────────────────────────────────────────────
 deploy() {
-    local emb_mode
+    local emb_mode tg_mode
     emb_mode="$(grep '^MYCELIUM_VPS_EMB_MODE=' "$ENV_FILE" | cut -d= -f2)"
+    tg_mode="$(grep '^MYCELIUM_VPS_TELEGRAM=' "$ENV_FILE" | cut -d= -f2)"
 
     local compose_cmd="docker compose -f $COMPOSE_FILE"
-    if [[ "$emb_mode" == "2" ]]; then
-        compose_cmd="$compose_cmd --profile full"
-    fi
+    [[ "$emb_mode" == "2" ]] && compose_cmd="$compose_cmd --profile full"
+    [[ "$tg_mode" == "1" ]]  && compose_cmd="$compose_cmd --profile telegram"
 
     info "Pulling images..."
     $compose_cmd pull
@@ -218,7 +235,7 @@ show_summary() {
     echo
     printf "  %-22s %s\n" "Service" "Access"
     printf "  %-22s %s\n" "──────────────────────" "──────────────────────────────"
-    printf "  %-22s %s\n" "MCP (HTTP)"            "http://<tailscale-ip>:8000/mcp"
+    printf "  %-22s %s\n" "MCP (HTTP)"            "http://<tailscale-ip>:9631/mcp"
     printf "  %-22s %s\n" "Neo4j Browser"         "http://<tailscale-ip>:7474"
     printf "  %-22s %s\n" "Syncthing UI"          "http://<tailscale-ip>:8384"
 
@@ -235,7 +252,7 @@ show_summary() {
     printf "  claude mcp remove mycelium -s user 2>/dev/null\n"
     printf "  claude mcp add -t http -s user \\\\\n"
     printf "    --header \"Authorization: Bearer %s\" \\\\\n" "$token"
-    printf "    mycelium http://<tailscale-ip>:8000/mcp\n"
+    printf "    mycelium http://<tailscale-ip>:9631/mcp\n"
     echo
     printf "  ${DIM}# 4. Set up Syncthing for vault sync (optional)${NC}\n"
     printf "  brew install syncthing\n"

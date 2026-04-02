@@ -129,14 +129,23 @@ class SummarySettings(BaseModel):
 class RenderSettings(BaseModel):
     enabled:            bool = False
     host:               str  = "0.0.0.0"
-    port:               int  = 8500
+    port:               int  = 9633
 
 
 class MCPSettings(BaseModel):
     transport:          str  = "stdio"   # stdio | streamable-http
     host:               str  = "0.0.0.0"
-    port:               int  = 8000
+    port:               int  = 9631
     auth_token:         str  = ""        # empty = no auth (local); set for HTTP
+
+
+class TelegramSettings(BaseModel):
+    bot_token:       str   = ""        # @BotFather token
+    owner_chat_id:   int   = 0         # authorized user's chat_id
+    mcp_url:         str   = "http://localhost:9631/mcp"
+    mcp_auth_token:  str   = ""        # Bearer token for MCP HTTP (fallback: mcp.auth_token)
+    debounce_sec:    float = 1.5       # text debounce window
+    rate_limit:      int   = 30        # max messages per minute
 
 
 class ObsidianSettings(BaseModel):
@@ -203,6 +212,7 @@ class Settings(BaseSettings):
     owner:                   OwnerSettings         = OwnerSettings()
     interaction:             InteractionSettings   = InteractionSettings()
     obsidian:                ObsidianSettings      = ObsidianSettings()
+    telegram:                TelegramSettings      = TelegramSettings()
 
 
 def load_settings() -> Settings:
