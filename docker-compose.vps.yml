@@ -53,7 +53,7 @@ services:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/mcp"]
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer $MYCELIUM_MCP__AUTH_TOKEN\" http://localhost:8000/mcp | grep -qE '200|406'"]
       interval: 10s
       timeout: 5s
       retries: 5
