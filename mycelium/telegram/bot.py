@@ -10,7 +10,7 @@ from aiogram import Dispatcher as AioDispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BotCommand, Message
+from aiogram.types import BotCommand, Message, ReplyKeyboardRemove
 
 from mycelium.telegram.agent import AgentProcess
 from mycelium.telegram.dispatcher import ChannelMessage, ChannelReply, Dispatcher
@@ -38,6 +38,7 @@ async def cmd_start(message: Message) -> None:
         "Just text me naturally — I have full access to your knowledge graph.\n\n"
         "<i>/commands — list all shortcuts</i>",
         parse_mode=ParseMode.HTML,
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
