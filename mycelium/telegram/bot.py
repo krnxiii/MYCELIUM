@@ -14,7 +14,6 @@ from aiogram.types import BotCommand, Message
 
 from mycelium.telegram.agent import AgentProcess
 from mycelium.telegram.dispatcher import ChannelMessage, ChannelReply, Dispatcher
-from mycelium.telegram.keyboard import main_keyboard
 from mycelium.telegram.mcp_client import MCPClient
 from mycelium.telegram.middleware import (
     ACKMiddleware,
@@ -36,31 +35,25 @@ router = Router()
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "<b>MYCELIUM</b> — knowledge graph interface\n\n"
-        "Commands:\n"
-        "  /capture &lt;text&gt; — save a thought\n"
-        "  /search &lt;query&gt; — search the graph\n"
-        "  /status — graph health\n"
-        "  /today — recent signals\n"
-        "  /neurons — top neurons\n"
-        "  /domains — active domains\n"
-        "  /abort — cancel current operation\n\n"
-        "<i>Free text → AI agent with full graph access</i>",
+        "Just text me naturally — I have full access to your knowledge graph.\n\n"
+        "<i>/commands — list all shortcuts</i>",
         parse_mode=ParseMode.HTML,
-        reply_markup=main_keyboard(),
     )
 
 
-@router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
+@router.message(Command("commands"))
+async def cmd_commands(message: Message) -> None:
     await message.answer(
-        "/capture &lt;text&gt; — capture a thought\n"
-        "/search &lt;query&gt; — search knowledge graph\n"
-        "/status — graph health + metrics\n"
-        "/today — recent signals\n"
-        "/neurons [type] — list neurons\n"
-        "/domains — list domains\n"
-        "/abort — cancel current operation\n\n"
-        "Free text → AI agent (Claude) with MCP tools",
+        "<b>Shortcuts</b> (fast mode, no AI):\n"
+        "  /capture &lt;text&gt; — save a thought\n"
+        "  /search &lt;query&gt; — search the graph\n"
+        "  /status — graph health + metrics\n"
+        "  /today — recent signals\n"
+        "  /neurons [type] — list neurons\n"
+        "  /domains — list domains\n\n"
+        "<b>Control:</b>\n"
+        "  /abort — cancel current operation\n\n"
+        "<i>Or just write naturally — AI agent handles everything.</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -238,16 +231,11 @@ async def run_bot() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    # Set bot commands menu
+    # Minimal visible menu (all other commands work but are hidden)
     await bot.set_my_commands([
-        BotCommand(command="capture", description="Capture a thought"),
-        BotCommand(command="search",  description="Search knowledge graph"),
-        BotCommand(command="status",  description="Graph health"),
-        BotCommand(command="today",   description="Recent signals"),
-        BotCommand(command="neurons", description="Top neurons"),
-        BotCommand(command="domains", description="Active domains"),
-        BotCommand(command="abort",   description="Cancel current operation"),
-        BotCommand(command="help",    description="Show help"),
+        BotCommand(command="status",   description="Graph health"),
+        BotCommand(command="abort",    description="Cancel current operation"),
+        BotCommand(command="commands", description="All shortcuts"),
     ])
 
     # Connect to MCP Data Node (for fast mode)

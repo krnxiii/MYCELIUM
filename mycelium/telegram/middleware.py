@@ -73,7 +73,7 @@ class ACKMiddleware(BaseMiddleware):
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
     ) -> Any:
         if isinstance(event, Message):
-            await _set_reaction(event, "eyes")
+            await _set_reaction(event, "👀")
             try:
                 result = await handler(event, data)
                 await _remove_reaction(event)
