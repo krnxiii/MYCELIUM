@@ -201,6 +201,8 @@ class AgentProcess:
         # Check for errors
         if self._process.returncode and self._process.returncode != 0:
             stderr_text = stderr_buf.decode(errors="replace").strip()
+            log.warning("agent.exit_error", rc=self._process.returncode,
+                        stderr=stderr_text[:300])
             # Session expired — clear and let next message start fresh
             if _is_session_error(stderr_text):
                 self._sessions.pop(chat_id, None)

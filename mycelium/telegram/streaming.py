@@ -98,7 +98,7 @@ class StreamingDelivery:
 
     async def finalize(self, text: str) -> None:
         """Send final version of the text."""
-        if not text:
+        if not text or text == self._last_text:
             return
 
         if self._msg_id is None:
