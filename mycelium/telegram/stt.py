@@ -33,7 +33,7 @@ class WhisperLocalSTT:
         if self._language != "auto":
             data["language"] = self._language
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(
                 f"{self._url}/v1/audio/transcriptions",
                 files={"file": ("voice.ogg", io.BytesIO(audio), "audio/ogg")},
@@ -67,7 +67,7 @@ class DeepgramSTT:
             "Authorization": f"Token {self._api_key}",
             "Content-Type":  "audio/ogg",
         }
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=300.0) as client:
             resp = await client.post(
                 self._URL,
                 params=params,
