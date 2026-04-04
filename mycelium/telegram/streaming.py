@@ -27,7 +27,7 @@ class ProgressIndicator:
         self._start   = 0.0
 
     async def start(self) -> None:
-        msg = await self._bot.send_message(self._chat_id, "\u23f3 ...")
+        msg = await self._bot.send_message(self._chat_id, "\U0001f914 ...")
         self._msg_id = msg.message_id
         self._start  = time.monotonic()
         self._task   = asyncio.create_task(self._tick())
@@ -39,7 +39,7 @@ class ProgressIndicator:
                 elapsed = int(time.monotonic() - self._start)
                 try:
                     await self._bot.edit_message_text(
-                        f"\u23f3 Thinking... ({elapsed}s)",
+                        f"\U0001f914 Thinking... ({elapsed}s)",
                         chat_id=self._chat_id,
                         message_id=self._msg_id,
                     )
