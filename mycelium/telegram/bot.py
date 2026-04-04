@@ -204,7 +204,7 @@ async def handle_voice(
 
         # Show transcript
         await message.reply(
-            f"\U0001f3a4 <i>{html.escape(transcript)}</i>",
+            f"\U0001f4ac <i>{html.escape(transcript)}</i>",
             parse_mode=ParseMode.HTML,
         )
 
