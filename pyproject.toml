@@ -39,6 +39,9 @@ telegram = [
     "aiogram>=3.0",
     "fastmcp>=2.0",
 ]
+telegram-deepgram = [
+    "deepgram-sdk>=3.0",
+]
 full = [
     "mycelium[mcp,local-ml,render,telegram]",
 ]

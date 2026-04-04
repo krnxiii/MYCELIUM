@@ -16,6 +16,51 @@ MIN_INITIAL_CHARS = 30
 EDIT_THROTTLE_SEC = 1.0
 
 
+class ProgressIndicator:
+    """Show elapsed time message until first content arrives."""
+
+    def __init__(self, bot: Bot, chat_id: int) -> None:
+        self._bot     = bot
+        self._chat_id = chat_id
+        self._msg_id: int | None = None
+        self._task: asyncio.Task | None = None
+        self._start   = 0.0
+
+    async def start(self) -> None:
+        msg = await self._bot.send_message(self._chat_id, "\u23f3 ...")
+        self._msg_id = msg.message_id
+        self._start  = time.monotonic()
+        self._task   = asyncio.create_task(self._tick())
+
+    async def _tick(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(5)
+                elapsed = int(time.monotonic() - self._start)
+                try:
+                    await self._bot.edit_message_text(
+                        f"\u23f3 Thinking... ({elapsed}s)",
+                        chat_id=self._chat_id,
+                        message_id=self._msg_id,
+                    )
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            pass
+
+    async def stop(self) -> int | None:
+        """Stop timer, delete progress message. Returns deleted msg_id."""
+        if self._task:
+            self._task.cancel()
+        if self._msg_id:
+            try:
+                await self._bot.delete_message(self._chat_id, self._msg_id)
+            except Exception:
+                pass
+            return self._msg_id
+        return None
+
+
 class StreamingDelivery:
     """Buffer agent chunks, deliver via sendMessage + editMessageText."""
 

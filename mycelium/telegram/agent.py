@@ -49,6 +49,11 @@ class AgentProcess:
         self._timeout   = timeout
         self._sessions: dict[str, str] = {}  # chat_id → session_id
         self._process:  asyncio.subprocess.Process | None = None
+        self._context:  str = ""
+
+    def set_context(self, context: str) -> None:
+        """Inject graph context into next system prompt."""
+        self._context = context
 
     async def run(
         self,
@@ -87,7 +92,8 @@ class AgentProcess:
 
         # Send prompt (with system prompt on first call, bare on resume)
         assert self._process.stdin is not None
-        prompt = text if session_id else f"{_SYSTEM_PROMPT}\n\n{text}"
+        ctx_block = f"\n\n{self._context}" if self._context else ""
+        prompt    = text if session_id else f"{_SYSTEM_PROMPT}{ctx_block}\n\n{text}"
         self._process.stdin.write(prompt.encode())
         await self._process.stdin.drain()
         self._process.stdin.close()

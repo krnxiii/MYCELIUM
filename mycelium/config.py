@@ -146,6 +146,12 @@ class TelegramSettings(BaseModel):
     mcp_auth_token:  str   = ""        # Bearer token for MCP HTTP (fallback: mcp.auth_token)
     debounce_sec:    float = 1.5       # text debounce window
     rate_limit:      int   = 30        # max messages per minute
+    # Voice STT
+    stt_provider:    str   = "none"    # whisper-local | deepgram | none
+    stt_api_key:     str   = ""        # Deepgram API key
+    stt_whisper_url: str   = "http://whisper:8000"  # Whisper container URL
+    stt_model:       str   = "medium"  # Whisper model name
+    stt_language:    str   = "auto"    # auto | ru | en | etc
 
 
 class ObsidianSettings(BaseModel):

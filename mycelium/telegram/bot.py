@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import html
 import re
 
 import structlog
-from aiogram import Bot, Router
+from aiogram import Bot, F, Router
 from aiogram import Dispatcher as AioDispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BotCommand, Message, ReplyKeyboardRemove
+from aiogram.types import (
+    BotCommand,
+    Message,
+    MessageOriginChannel,
+    MessageOriginChat,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+    ReplyKeyboardRemove,
+)
 
 from mycelium.telegram.agent import AgentProcess
 from mycelium.telegram.dispatcher import ChannelMessage, ChannelReply, Dispatcher
@@ -22,7 +31,8 @@ from mycelium.telegram.middleware import (
     SequentialMiddleware,
     TypingKeepAlive,
 )
-from mycelium.telegram.streaming import StreamingDelivery
+from mycelium.telegram.streaming import ProgressIndicator, StreamingDelivery
+from mycelium.telegram.stt import STTProvider, create_stt
 
 log = structlog.get_logger()
 
@@ -124,29 +134,128 @@ async def cmd_domains(message: Message, dispatcher: Dispatcher) -> None:
             await _send_reply(message, reply)
 
 
+@router.message(F.forward_origin)
+async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
+    """Forwarded message -> extract source attribution -> route to agent."""
+    source = _extract_forward_source(message)
+    text   = message.text or message.caption or ""
+    if not text:
+        return
+
+    assert message.bot is not None
+    attributed = f"[Forwarded from {source}]\n{text}"
+
+    async with TypingKeepAlive(message):
+        progress = ProgressIndicator(message.bot, message.chat.id)
+        await progress.start()
+        stream      = StreamingDelivery(message.bot, message.chat.id)
+        channel_msg = ChannelMessage(text=attributed, chat_id=str(message.chat.id))
+        last_text     = ""
+        first_content = True
+        async for reply in dispatcher.dispatch(channel_msg):
+            if first_content:
+                await progress.stop()
+                first_content = False
+            if reply.is_stream:
+                await stream.update(reply.text)
+            else:
+                await stream.finalize(reply.text)
+            last_text = reply.text
+        if first_content:
+            await progress.stop()
+        if last_text:
+            await stream.finalize(last_text)
+
+
+@router.message(F.voice)
+async def handle_voice(
+    message: Message, dispatcher: Dispatcher, stt: STTProvider | None = None,
+) -> None:
+    """Voice message -> transcribe -> route as text."""
+    if not message.voice or not message.bot:
+        return
+
+    if stt is None:
+        await message.reply(
+            "Voice input not configured."
+            " Set MYCELIUM_TELEGRAM__STT_PROVIDER.",
+        )
+        return
+
+    async with TypingKeepAlive(message):
+        # Download voice file
+        file = await message.bot.get_file(message.voice.file_id)
+        assert file.file_path is not None
+        buf = await message.bot.download_file(file.file_path)
+        assert buf is not None
+        audio_bytes = buf.read()
+
+        # Transcribe
+        try:
+            transcript = await stt.transcribe(audio_bytes)
+        except Exception as e:
+            log.error("voice.transcribe_failed", error=str(e))
+            await message.reply("Failed to transcribe voice message.")
+            return
+
+        if not transcript:
+            await message.reply("Could not recognize speech.")
+            return
+
+        # Show transcript
+        await message.reply(
+            f"\U0001f3a4 <i>{html.escape(transcript)}</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        # Route through dispatcher (same as free_text)
+        progress = ProgressIndicator(message.bot, message.chat.id)
+        await progress.start()
+        stream      = StreamingDelivery(message.bot, message.chat.id)
+        channel_msg = ChannelMessage(text=transcript, chat_id=str(message.chat.id))
+        last_text     = ""
+        first_content = True
+        async for reply in dispatcher.dispatch(channel_msg):
+            if first_content:
+                await progress.stop()
+                first_content = False
+            if reply.is_stream:
+                await stream.update(reply.text)
+            else:
+                await stream.finalize(reply.text)
+            last_text = reply.text
+        if first_content:
+            await progress.stop()
+        if last_text:
+            await stream.finalize(last_text)
+
+
 @router.message()
 async def free_text(message: Message, dispatcher: Dispatcher) -> None:
-    """Catch-all: free text → agent with streaming delivery."""
+    """Catch-all: free text -> agent with streaming delivery."""
     if not message.text:
         return
 
     assert message.bot is not None
 
     async with TypingKeepAlive(message):
-        stream = StreamingDelivery(message.bot, message.chat.id)
-        channel_msg = ChannelMessage(
-            text=message.text,
-            chat_id=str(message.chat.id),
-        )
-        last_text = ""
+        progress = ProgressIndicator(message.bot, message.chat.id)
+        await progress.start()
+        stream      = StreamingDelivery(message.bot, message.chat.id)
+        channel_msg = ChannelMessage(text=message.text, chat_id=str(message.chat.id))
+        last_text     = ""
+        first_content = True
         async for reply in dispatcher.dispatch(channel_msg):
+            if first_content:
+                await progress.stop()
+                first_content = False
             if reply.is_stream:
                 await stream.update(reply.text)
             else:
                 await stream.finalize(reply.text)
             last_text = reply.text
-
-        # Ensure final text is delivered
+        if first_content:
+            await progress.stop()
         if last_text:
             await stream.finalize(last_text)
 
@@ -184,6 +293,21 @@ def _split_text(text: str, limit: int) -> list[str]:
 
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
+
+
+def _extract_forward_source(message: Message) -> str:
+    """Extract human-readable source from forward_origin."""
+    origin = message.forward_origin
+    if isinstance(origin, MessageOriginUser):
+        parts = [origin.sender_user.first_name, origin.sender_user.last_name or ""]
+        return " ".join(p for p in parts if p)
+    if isinstance(origin, MessageOriginChannel):
+        return origin.chat.title or "channel"
+    if isinstance(origin, MessageOriginHiddenUser):
+        return origin.sender_user_name
+    if isinstance(origin, MessageOriginChat):
+        return origin.sender_chat.title or "chat"
+    return "unknown"
 
 
 # ── MCP registration for agent ──────────────────────────────────────
@@ -248,9 +372,20 @@ async def run_bot() -> None:
 
     dispatcher = Dispatcher(mcp_client, agent)
 
+    # STT provider (optional: voice transcription)
+    stt = create_stt(
+        provider=tg.stt_provider,
+        api_key=tg.stt_api_key,
+        url=tg.stt_whisper_url,
+        model=tg.stt_model,
+        language=tg.stt_language,
+    )
+
     # aiogram Dispatcher
     dp = AioDispatcher()
     dp["dispatcher"] = dispatcher
+    if stt:
+        dp["stt"] = stt
 
     # Middleware stack (order matters: first registered = outermost)
     router.message.middleware(RateLimitMiddleware(tg.rate_limit))
@@ -265,6 +400,7 @@ async def run_bot() -> None:
         mcp_url=tg.mcp_url,
         owner_chat_id=tg.owner_chat_id,
         agent_model=cfg.llm.model,
+        stt_provider=tg.stt_provider if stt else "none",
     )
 
     try:

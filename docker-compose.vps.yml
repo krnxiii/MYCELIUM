@@ -73,6 +73,11 @@ services:
       MYCELIUM_TELEGRAM__MCP_URL: http://mycelium:9631/mcp
       MYCELIUM_TELEGRAM__MCP_AUTH_TOKEN: ${MYCELIUM_MCP__AUTH_TOKEN:-}
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
+      MYCELIUM_TELEGRAM__STT_PROVIDER: ${MYCELIUM_TELEGRAM__STT_PROVIDER:-none}
+      MYCELIUM_TELEGRAM__STT_API_KEY: ${MYCELIUM_TELEGRAM__STT_API_KEY:-}
+      MYCELIUM_TELEGRAM__STT_WHISPER_URL: ${MYCELIUM_TELEGRAM__STT_WHISPER_URL:-http://whisper:8000}
+      MYCELIUM_TELEGRAM__STT_MODEL: ${MYCELIUM_TELEGRAM__STT_MODEL:-medium}
+      MYCELIUM_TELEGRAM__STT_LANGUAGE: ${MYCELIUM_TELEGRAM__STT_LANGUAGE:-auto}
     volumes:
       - ~/.claude:/root/.claude
       - ~/.claude.json:/root/.claude.json
@@ -81,6 +86,25 @@ services:
         condition: service_healthy
     profiles:
       - telegram
+    restart: unless-stopped
+
+  # Local Whisper STT (optional, use --profile voice-whisper)
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: mycelium-whisper
+    environment:
+      WHISPER__MODEL: ${MYCELIUM_TELEGRAM__STT_MODEL:-medium}
+      WHISPER__DEVICE: cpu
+    volumes:
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/whisper:/root/.cache/huggingface
+    profiles:
+      - voice-whisper
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
     restart: unless-stopped
 
   # Local TEI embeddings (optional, use --profile full)

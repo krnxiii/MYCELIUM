@@ -61,6 +61,11 @@ class Dispatcher:
 
     async def _agent_stream(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         """Route free text to claude -p agent, yield streaming chunks."""
+        # Build context on first message per chat (no session yet)
+        if not self._agent._sessions.get(msg.chat_id):
+            ctx = await _build_graph_context(self._mcp)
+            if ctx:
+                self._agent.set_context(ctx)
         async for chunk in self._agent.run(msg.text, msg.chat_id):
             yield ChannelReply(
                 text=chunk.text,
@@ -137,3 +142,35 @@ class Dispatcher:
         result = await self._mcp.call_tool("list_domains")
         plain, html = format_domains(result)
         return ChannelReply(text=plain, html=html)
+
+
+async def _build_graph_context(mcp: MCPClient) -> str:
+    """Fetch graph snapshot for agent system prompt."""
+    try:
+        health  = await mcp.call_tool("health")
+        neurons = await mcp.call_tool("list_neurons", {"limit": 10})
+        domains = await mcp.call_tool("list_domains")
+
+        parts = ["GRAPH CONTEXT:"]
+
+        # Stats from health
+        if isinstance(health, dict):
+            stats = health.get("stats", health)
+            parts.append(f"  Neurons: {stats.get('neuron_count', '?')} | "
+                         f"Signals: {stats.get('signal_count', '?')} | "
+                         f"Synapses: {stats.get('synapse_count', '?')}")
+
+        # Top neurons
+        if isinstance(neurons, list) and neurons:
+            names = [n.get("name", "?") for n in neurons[:10]]
+            parts.append(f"  Top neurons: {', '.join(names)}")
+
+        # Domains
+        if isinstance(domains, dict):
+            domain_names = list(domains.keys())[:5]
+            if domain_names:
+                parts.append(f"  Domains: {', '.join(domain_names)}")
+
+        return "\n".join(parts)
+    except Exception:
+        return ""
