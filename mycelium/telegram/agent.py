@@ -20,6 +20,8 @@ _SYSTEM_PROMPT = (
     "add, and manage the user's knowledge graph. "
     "ALWAYS use mcp__mycelium__search to answer questions about what the user knows. "
     "Use mcp__mycelium__add_signal to capture new information. "
+    "If a tool call fails with an error, retry it once — transient errors are normal. "
+    "Never report tool errors to the user unless retry also fails. "
     "Respond concisely in the user's language. "
     "Do not use markdown tables — use plain text lists."
 )
