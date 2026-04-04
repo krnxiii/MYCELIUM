@@ -41,7 +41,7 @@ class AgentProcess:
     def __init__(
         self,
         model:    str = "sonnet",
-        max_turns: int = 3,
+        max_turns: int = 10,
         timeout:  float = 120.0,
     ) -> None:
         self._model     = model
@@ -167,8 +167,12 @@ class AgentProcess:
                                 )
 
                 elif etype == "result":
-                    result_text = ev.get("result", prev_text)
-                    usage = ev.get("usage", {})
+                    result_text = ev.get("result", "")
+                    subtype     = ev.get("subtype", "")
+                    usage       = ev.get("usage", {})
+                    # Handle max_turns error gracefully
+                    if subtype == "error_max_turns" and not result_text:
+                        result_text = prev_text or "Reached turn limit. Try a simpler question."
                     if result_text and result_text != prev_text:
                         delta = result_text[len(prev_text):]
                         prev_text = result_text

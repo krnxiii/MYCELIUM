@@ -105,6 +105,7 @@ class StreamingDelivery:
             # Never sent anything — send as single message
             for chunk in _split_text(text, MAX_MESSAGE_LEN):
                 await self._send_plain(chunk)
+            self._last_text = text
             return
 
         # Final edit with full text
