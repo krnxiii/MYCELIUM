@@ -42,11 +42,9 @@ class AgentProcess:
         self,
         model:    str = "sonnet",
         max_turns: int = 10,
-        timeout:  float = 120.0,
     ) -> None:
         self._model     = model
         self._max_turns = max_turns
-        self._timeout   = timeout
         self._sessions: dict[str, str] = {}  # chat_id → session_id
         self._process:  asyncio.subprocess.Process | None = None
         self._context:  str = ""
@@ -119,20 +117,7 @@ class AgentProcess:
 
         try:
             while True:
-                try:
-                    line = await asyncio.wait_for(
-                        self._process.stdout.readline(),
-                        timeout=self._timeout,
-                    )
-                except TimeoutError:
-                    self._process.kill()
-                    await self._process.wait()
-                    yield AgentChunk(
-                        text=prev_text or "Timeout: no response.",
-                        is_final=True,
-                    )
-                    stderr_task.cancel()
-                    return
+                line = await self._process.stdout.readline()
 
                 if not line:
                     break  # EOF

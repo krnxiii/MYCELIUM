@@ -99,22 +99,80 @@ async def _remove_reaction(msg: Message) -> None:
         await msg.react([])
 
 
-# ── Sequentializer: one message at a time per chat ──────────────────
+# ── Sequentializer with message coalescing ─────────────────────────
+
+_COALESCE_DELAY = 0.5  # seconds to wait for more messages after last buffered
+
 
 class SequentialMiddleware(BaseMiddleware):
-    """Process messages sequentially per chat (no race conditions)."""
+    """Process messages sequentially per chat. Coalesce queued messages.
+
+    While a handler is running for a chat, incoming messages are buffered.
+    When the handler finishes, buffered messages are merged into one
+    and processed as a single request (collect mode).
+    """
 
     def __init__(self) -> None:
-        self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._locks:   dict[int, asyncio.Lock]        = defaultdict(asyncio.Lock)
+        self._buffers: dict[int, list[Message]]        = defaultdict(list)
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
     ) -> Any:
-        if isinstance(event, Message):
-            chat_id = event.chat.id
+        if not isinstance(event, Message):
+            return await handler(event, data)
+
+        chat_id = event.chat.id
+        lock    = self._locks[chat_id]
+
+        # Lock busy — buffer for coalescing, don't block
+        if lock.locked():
+            self._buffers[chat_id].append(event)
+            log.debug("sequential.buffered", chat_id=chat_id,
+                      queued=len(self._buffers[chat_id]))
+            return None
+
+        # Lock free — process, then drain buffer
+        async with lock:
+            result = await handler(event, data)
+
+        # After handler done: drain any messages that arrived meanwhile
+        await self._drain(chat_id, handler, data)
+        return result
+
+    async def _drain(self, chat_id: int, handler: Handler, data: dict[str, Any]) -> None:
+        """Drain and coalesce buffered messages."""
+        while self._buffers.get(chat_id):
+            # Brief pause to collect stragglers
+            await asyncio.sleep(_COALESCE_DELAY)
+
+            messages = self._buffers.pop(chat_id, [])
+            if not messages:
+                return
+
+            merged = _merge_messages(messages)
+            if not merged:
+                return
+
+            log.info("sequential.coalesced", chat_id=chat_id, count=len(messages))
             async with self._locks[chat_id]:
-                return await handler(event, data)
-        return await handler(event, data)
+                await handler(merged, data)
+
+
+def _merge_messages(messages: list[Message]) -> Message | None:
+    """Merge buffered messages: combine text, keep last message as carrier."""
+    texts: list[str] = []
+    last_msg: Message | None = None
+    for msg in messages:
+        last_msg = msg
+        t = msg.text or msg.caption or ""
+        if t:
+            texts.append(t)
+    if not last_msg or not texts:
+        return last_msg
+    # Patch text on the carrier message (it has chat_id, bot, etc.)
+    object.__setattr__(last_msg, "text", "\n".join(texts))
+    return last_msg
 
 
 # ── Typing keepalive ────────────────────────────────────────────────
@@ -122,7 +180,7 @@ class SequentialMiddleware(BaseMiddleware):
 class TypingKeepAlive:
     """Send typing action every 3s while processing. Auto-stop after TTL."""
 
-    def __init__(self, msg: Message, ttl: float = 60.0) -> None:
+    def __init__(self, msg: Message, ttl: float = 1800.0) -> None:
         self._msg  = msg
         self._ttl  = ttl
         self._task: asyncio.Task[None] | None = None
