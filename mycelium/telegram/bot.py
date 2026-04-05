@@ -153,11 +153,11 @@ async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
         if path:
             text = (
                 f"{prefix} Photo saved at {path}. "
-                "Use vault_store to save it. "
-                "You CANNOT see or read image files — do NOT attempt to read the file."
+                "First, use Read tool to view the image and analyze its contents. "
+                "Then vault_store to save in vault, add_signal with extracted info, vault_link to connect."
             )
             if caption:
-                text += f" Also process the caption as a signal: {caption}"
+                text += f" Caption: {caption}"
             log.info("msg.forward_photo", source=source, chat_id=message.chat.id)
             await _stream_dispatch(message, dispatcher, text)
             return
@@ -253,12 +253,11 @@ async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
     caption = message.caption or ""
     text = (
         f"User sent a photo (saved at {path}). "
-        "Use vault_store to save it in the vault. "
-        "You CANNOT see or read image files — do NOT attempt to read the file. "
-        "Just store it and confirm to the user."
+        "First, use Read tool to view the image and analyze its contents. "
+        "Then vault_store to save in vault, add_signal with extracted info, vault_link to connect."
     )
     if caption:
-        text += f" Also process the caption as a signal: {caption}"
+        text += f" Caption: {caption}"
     await _stream_dispatch(message, dispatcher, text)
 
 
