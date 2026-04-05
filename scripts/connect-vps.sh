@@ -185,7 +185,7 @@ register_mcp() {
 # ── Step 5: Install Skills ───────────────────────────────────────────
 install_skills() {
     local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall
-                  mycelium-reflect mycelium-distill mycelium-discover)
+                  mycelium-reflect mycelium-distill mycelium-discover mycelium-domain)
 
     # Try local repo first, fallback to GitHub download
     local root

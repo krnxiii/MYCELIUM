@@ -426,7 +426,7 @@ register_mcp() {
     success "Gate init: read=on, write=off"
 
     # Install skills globally
-    local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall mycelium-reflect mycelium-distill mycelium-discover)
+    local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall mycelium-reflect mycelium-distill mycelium-discover mycelium-domain)
     for skill in "${skills[@]}"; do
         mkdir -p ~/.claude/skills/"$skill"
         cp "$root/.claude/skills/$skill/SKILL.md" ~/.claude/skills/"$skill"/SKILL.md
@@ -554,8 +554,9 @@ main() {
     root="$(detect_project_root)"
     cd "$root"
 
-    # Step 1: Scenario selection (before deps, to know what to check)
-    step "1/6" "Select installation scenario"
+    # Step 1: Scenario selection
+    local total=5
+    step "1/$total" "Select installation scenario"
     local scenario
     scenario="$(select_scenario)"
     local labels=( [1]="Local dev" [2]="Docker + API" [3]="Full Docker" [4]="Connect to VPS" )
@@ -566,31 +567,34 @@ main() {
         exec bash scripts/connect-vps.sh
     fi
 
-    # Step 2: Check dependencies (based on scenario)
-    step "2/6" "Checking dependencies"
+    # Scenario 1 has extra step (CLI wrapper)
+    [[ "$scenario" == "1" ]] && total=6
+
+    # Step 2: Check dependencies
+    step "2/$total" "Checking dependencies"
     check_deps "$scenario"
     success "All dependencies satisfied"
 
     # Step 3: Generate .env
-    step "3/6" "Configure environment"
+    step "3/$total" "Configure environment"
     generate_env "$scenario"
 
-    # Step 4: Run make target
-    step "4/6" "Installing MYCELIUM"
+    # Step 4: Install
+    step "4/$total" "Installing MYCELIUM"
     run_scenario "$scenario"
 
-    # Step 5: Register MCP server in Claude Code
-    step "5/7" "Registering MCP server"
+    # Step 5: Register MCP
+    step "5/$total" "Registering MCP server"
     register_mcp "$scenario"
 
     # Step 6: Install CLI wrapper (scenario 1 only)
     if [[ "$scenario" == "1" ]]; then
-        step "6/7" "Installing CLI"
+        step "6/$total" "Installing CLI"
         install_cli "$root"
     fi
 
-    # Step 7: Summary
-    step "7/7" "Done!"
+    # Done
+    step "Done" "Ready!"
     show_summary "$scenario"
 }
 
