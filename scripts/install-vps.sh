@@ -231,15 +231,29 @@ configure_env() {
 
     # ── Tailscale ──
     echo
-    info "Tailscale connects VPS to your laptop via WireGuard mesh."
-    info "Get an auth key at: https://login.tailscale.com/admin/settings/keys"
+    info "Tailscale creates a secure network between VPS and your laptop."
+    info "Without it, your laptop won't be able to connect to this VPS."
+    echo
+    info "How to get the key:"
+    info "  1. Go to https://login.tailscale.com (sign up if needed)"
+    info "  2. Settings → Keys → Generate auth key"
+    info "  3. Copy and paste below"
+    echo
     local ts_key
-    ts_key="$(ask_secret "Tailscale auth key (or empty to skip)")"
-    if [[ -n "$ts_key" ]]; then
-        set_env_val "TAILSCALE_AUTHKEY" "$ts_key"
-    else
-        warn "Tailscale skipped — add TAILSCALE_AUTHKEY to .env later"
-    fi
+    while true; do
+        ts_key="$(ask_secret "Tailscale auth key")"
+        if [[ -n "$ts_key" ]]; then
+            set_env_val "TAILSCALE_AUTHKEY" "$ts_key"
+            break
+        fi
+        warn "Tailscale is required for VPS setup. Your laptop needs it to connect."
+        local skip
+        skip="$(ask "Skip anyway? (system won't be reachable from laptop) [y/N]" "n")"
+        if [[ "$skip" =~ ^[Yy] ]]; then
+            warn "Skipped — add TAILSCALE_AUTHKEY to .env and restart Tailscale later"
+            break
+        fi
+    done
 
     # ── Telegram bot ──
     echo
