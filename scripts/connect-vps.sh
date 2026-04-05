@@ -228,12 +228,12 @@ test_connectivity() {
 
     spin_stop true "VPS reachable"
 
-    # Test MCP endpoint
+    # Test MCP endpoint (no -f flag: we check http_code ourselves)
     spin_start "Checking MCP server..."
     local http_code
-    http_code="$(curl -sf -o /dev/null -w '%{http_code}' \
+    http_code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 \
         -H "Authorization: Bearer $MCP_TOKEN" \
-        "http://$VPS_HOST:9631/mcp" 2>/dev/null || echo "000")"
+        "http://$VPS_HOST:9631/mcp" 2>/dev/null)" || http_code="000"
 
     case "$http_code" in
         200|406) spin_stop true  "MCP server reachable" ;;
@@ -258,10 +258,10 @@ register_mcp() {
     # Remove stale registration
     claude mcp remove mycelium -s user 2>/dev/null || true
 
-    # Register
+    # Register (name + url BEFORE --header, which is variadic)
     claude mcp add -t http -s user \
-        --header "Authorization: Bearer $MCP_TOKEN" \
-        mycelium "http://$VPS_HOST:9631/mcp"
+        mycelium "http://$VPS_HOST:9631/mcp" \
+        --header "Authorization: Bearer $MCP_TOKEN"
 
     success "MCP server registered in Claude Code"
 
