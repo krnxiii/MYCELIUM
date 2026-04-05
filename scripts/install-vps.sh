@@ -354,9 +354,9 @@ show_summary() {
     fi
 
     echo
-    printf "  ${BOLD}On your laptop — run the connect script:${NC}\n"
+    printf "  ${BOLD}On your laptop — one command:${NC}\n"
     echo
-    printf "  ${CYAN}bash scripts/connect-vps.sh${NC}\n"
+    printf "  ${CYAN}bash <(curl -fsSL https://raw.githubusercontent.com/krnxiii/MYCELIUM/main/scripts/connect-vps.sh)${NC}\n"
     echo
     printf "  ${DIM}It will ask for:${NC}\n"
     printf "  ${DIM}  - VPS hostname/IP (Tailscale)${NC}\n"
@@ -365,7 +365,7 @@ show_summary() {
         printf "  ${DIM}  - Syncthing ID: %s${NC}\n" "$st_id"
     fi
     echo
-    printf "  ${DIM}The script handles: MCP registration, skills, vault sync — everything.${NC}\n"
+    printf "  ${DIM}Handles: MCP registration, skills, vault sync — no repo needed.${NC}\n"
     echo
 }
 

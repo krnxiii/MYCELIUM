@@ -7,6 +7,7 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'
 DIM='\033[2m'; NC='\033[0m'
 
 VAULT_DIR="$HOME/.mycelium/vault"
+GITHUB_RAW="https://raw.githubusercontent.com/krnxiii/MYCELIUM/main"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 info()    { printf "${BLUE}ℹ${NC}  %s\n" "$1"; }
@@ -46,12 +47,17 @@ detect_os() {
     esac
 }
 
-# ── Project Root ────────────────────────────────────────────────────
+# ── Project Root (optional — script works without repo) ─────────────
 detect_project_root() {
     local dir
     dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     [[ "$(basename "$dir")" == "scripts" ]] && dir="$(dirname "$dir")"
-    echo "$dir"
+    # Verify it's actually the repo
+    if [[ -f "$dir/Makefile" ]] && [[ -d "$dir/.claude/skills" ]]; then
+        echo "$dir"
+    else
+        return 1
+    fi
 }
 
 # ── Step 1: Check Dependencies ──────────────────────────────────────
@@ -181,19 +187,21 @@ register_mcp() {
 
 # ── Step 5: Install Skills ───────────────────────────────────────────
 install_skills() {
-    local root="$1"
-
-    if [[ ! -d "$root/.claude/skills" ]]; then
-        warn "Skills directory not found — skipping"
-        return
-    fi
-
     local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall
                   mycelium-reflect mycelium-distill mycelium-discover)
+
+    # Try local repo first, fallback to GitHub download
+    local root
+    root="$(detect_project_root 2>/dev/null || echo "")"
+
     for skill in "${skills[@]}"; do
-        if [[ -f "$root/.claude/skills/$skill/SKILL.md" ]]; then
-            mkdir -p ~/.claude/skills/"$skill"
+        mkdir -p ~/.claude/skills/"$skill"
+        if [[ -n "$root" ]] && [[ -f "$root/.claude/skills/$skill/SKILL.md" ]]; then
             cp "$root/.claude/skills/$skill/SKILL.md" ~/.claude/skills/"$skill"/SKILL.md
+        else
+            curl -fsSL "$GITHUB_RAW/.claude/skills/$skill/SKILL.md" \
+                -o ~/.claude/skills/"$skill"/SKILL.md 2>/dev/null \
+                || warn "Failed to download skill: $skill"
         fi
     done
     success "Skills installed"
@@ -430,9 +438,6 @@ main() {
     printf "  ${BOLD}${CYAN}MYCELIUM${NC} — connect to VPS\n"
     printf "  ${DIM}Set up laptop to use remote MYCELIUM Data Node${NC}\n"
 
-    local root
-    root="$(detect_project_root)"
-
     step "1/6" "Checking dependencies"
     check_deps
 
@@ -446,7 +451,7 @@ main() {
     register_mcp
 
     step "5/6" "Installing skills"
-    install_skills "$root"
+    install_skills
 
     step "6/6" "Setting up vault sync"
     setup_syncthing
