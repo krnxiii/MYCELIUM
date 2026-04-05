@@ -307,9 +307,9 @@ configure_env() {
 # ── Deploy ──────────────────────────────────────────────────────────
 deploy() {
     local emb_mode tg_mode whisper_mode
-    emb_mode="$(grep '^MYCELIUM_VPS_EMB_MODE=' "$ENV_FILE" | cut -d= -f2)"
-    tg_mode="$(grep '^MYCELIUM_VPS_TELEGRAM=' "$ENV_FILE" | cut -d= -f2)"
-    whisper_mode="$(grep '^MYCELIUM_VPS_WHISPER=' "$ENV_FILE" | cut -d= -f2)"
+    emb_mode="$(grep '^MYCELIUM_VPS_EMB_MODE=' "$ENV_FILE" | cut -d= -f2 || true)"
+    tg_mode="$(grep '^MYCELIUM_VPS_TELEGRAM=' "$ENV_FILE" | cut -d= -f2 || true)"
+    whisper_mode="$(grep '^MYCELIUM_VPS_WHISPER=' "$ENV_FILE" | cut -d= -f2 || true)"
 
     # Create directories for bind mounts
     local data_dir="${MYCELIUM_DATA_DIR:-$HOME/.mycelium}"
