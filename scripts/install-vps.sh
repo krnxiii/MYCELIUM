@@ -370,23 +370,28 @@ show_summary() {
         sleep 2
     done
 
-    local w=56
-    local rule
-    rule="$(printf '─%.0s' $(seq 1 $w))"
+    # Compute box width from longest content
+    local token_line="Token       $token"
+    local sync_line=""
+    [[ -n "$st_id" ]] && sync_line="Sync ID     $st_id"
+    local W=44  # min: "MCP         http://<tailscale-ip>:9631/mcp"
+    (( ${#token_line} > W )) && W=${#token_line}
+    (( ${#sync_line}  > W )) && W=${#sync_line}
+
+    _row() { printf "  ${DIM}│${NC} %-${W}s ${DIM}│${NC}\n" "$1"; }
+    _rul() { printf "  ${DIM}%s%s%s${NC}\n" "$1" "$(printf '─%.0s' $(seq 1 $((W+2))))" "$2"; }
 
     printf '\n'
-    printf "  ${DIM}┌%s┐${NC}\n" "$rule"
-    printf "  ${DIM}│${NC}  ${BGREEN}%-${w}s${NC}${DIM}│${NC}\n" "MYCELIUM VPS is ready"
-    printf "  ${DIM}├%s┤${NC}\n" "$rule"
-    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "MCP"       "http://<tailscale-ip>:9631/mcp"
-    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "Neo4j"     "http://<tailscale-ip>:7474"
-    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "Syncthing" "http://<tailscale-ip>:8384"
-    printf "  ${DIM}├%s┤${NC}\n" "$rule"
-    printf "  ${DIM}│${NC}  ${BOLD}Token${NC}      ${CYAN}%-$((w-13))s${NC}${DIM}│${NC}\n" "$token"
-    if [[ -n "$st_id" ]]; then
-        printf "  ${DIM}│${NC}  ${BOLD}Sync ID${NC}    ${CYAN}%-$((w-13))s${NC}${DIM}│${NC}\n" "$st_id"
-    fi
-    printf "  ${DIM}└%s┘${NC}\n" "$rule"
+    _rul "┌" "┐"
+    _row "MYCELIUM VPS is ready"
+    _rul "├" "┤"
+    _row "MCP         http://<tailscale-ip>:9631/mcp"
+    _row "Neo4j       http://<tailscale-ip>:7474"
+    _row "Syncthing   http://<tailscale-ip>:8384"
+    _rul "├" "┤"
+    _row "$token_line"
+    [[ -n "$st_id" ]] && _row "$sync_line"
+    _rul "└" "┘"
 
     printf '\n'
     printf "  ${BOLD}On your laptop:${NC}\n"
