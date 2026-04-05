@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import html
-import re
+from pathlib import Path
 
 import structlog
 from aiogram import Bot, F, Router
@@ -31,6 +31,7 @@ from mycelium.telegram.middleware import (
     SequentialMiddleware,
     TypingKeepAlive,
 )
+from mycelium.telegram.sanitizer import sanitize_html, strip_tags
 from mycelium.telegram.streaming import ProgressIndicator, StreamingDelivery
 from mycelium.telegram.stt import STTProvider, create_stt
 
@@ -39,6 +40,8 @@ log = structlog.get_logger()
 router = Router()
 
 _EMOJI_SPEECH = "\U0001f4ac"  # 💬
+_UPLOAD_DIR   = Path("/tmp/tg-uploads")
+_TEXT_EXTS    = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".log"})
 
 
 # ── Handlers ────────────────────────────────────────────────────────
@@ -66,7 +69,8 @@ async def cmd_commands(message: Message) -> None:
         "  /domains — list domains\n\n"
         "<b>Control:</b>\n"
         "  /abort — cancel current operation\n\n"
-        "<i>Or just write naturally — AI agent handles everything.</i>",
+        "<i>Or just write naturally — AI agent handles everything.\n"
+        "Photos, documents, voice messages, and forwards are supported.</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -199,6 +203,80 @@ async def handle_voice(
     await _stream_dispatch(message, dispatcher, transcript)
 
 
+@router.message(F.photo)
+async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
+    """Photo → download → save to shared volume → route to agent."""
+    if not message.bot or not message.photo:
+        return
+
+    photo = message.photo[-1]  # largest resolution
+    file  = await message.bot.get_file(photo.file_id)
+    if not file.file_path:
+        await message.reply("Failed to get photo.")
+        return
+    buf = await message.bot.download_file(file.file_path)
+    if not buf:
+        await message.reply("Failed to download photo.")
+        return
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ext      = Path(file.file_path).suffix or ".jpg"
+    filename = f"{message.chat.id}_{message.message_id}{ext}"
+    path     = _UPLOAD_DIR / filename
+    path.write_bytes(buf.read())
+
+    caption = message.caption or ""
+    log.info("msg.photo", chat_id=message.chat.id, path=str(path),
+             size=path.stat().st_size, caption_len=len(caption))
+
+    text = f"[Photo saved at {path}]"
+    if caption:
+        text += f" Caption: {caption}"
+    await _stream_dispatch(message, dispatcher, text)
+
+
+@router.message(F.document)
+async def handle_document(message: Message, dispatcher: Dispatcher) -> None:
+    """Document → download → save to shared volume → route to agent."""
+    if not message.bot or not message.document:
+        return
+
+    doc = message.document
+    file = await message.bot.get_file(doc.file_id)
+    if not file.file_path:
+        await message.reply("Failed to get document.")
+        return
+    buf = await message.bot.download_file(file.file_path)
+    if not buf:
+        await message.reply("Failed to download document.")
+        return
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    orig_name = doc.file_name or f"doc_{message.message_id}"
+    filename  = f"{message.chat.id}_{orig_name}"
+    path      = _UPLOAD_DIR / filename
+    path.write_bytes(buf.read())
+
+    # Read text content for text-based files
+    content_preview = ""
+    if path.suffix.lower() in _TEXT_EXTS:
+        try:
+            content_preview = path.read_text(errors="replace")[:4000]
+        except Exception:
+            pass
+
+    caption = message.caption or ""
+    log.info("msg.document", chat_id=message.chat.id, filename=orig_name,
+             size=path.stat().st_size)
+
+    text = f"[Document: {orig_name}, saved at {path}]"
+    if caption:
+        text += f" Caption: {caption}"
+    if content_preview:
+        text += f"\n\nContent:\n{content_preview}"
+    await _stream_dispatch(message, dispatcher, text)
+
+
 @router.message()
 async def free_text(message: Message, dispatcher: Dispatcher) -> None:
     """Catch-all: free text -> agent with streaming delivery."""
@@ -244,16 +322,18 @@ async def _stream_dispatch(
 # ── Reply delivery with fallback chain ──────────────────────────────
 
 async def _send_reply(message: Message, reply: ChannelReply) -> None:
-    """Send reply: try HTML first, fallback to plain text. Split if >4096."""
+    """Send reply: sanitize HTML, fallback to plain text. Split if >4096."""
     text = reply.html or reply.text
     mode = ParseMode.HTML if reply.html else None
+    if mode:
+        text = sanitize_html(text)
 
     for chunk in _split_text(text, 4096):
         try:
             await message.answer(chunk, parse_mode=mode)
         except Exception:
             if mode:
-                await message.answer(_strip_html(chunk) if reply.html else chunk)
+                await message.answer(strip_tags(chunk))
 
 
 def _split_text(text: str, limit: int) -> list[str]:
@@ -270,10 +350,6 @@ def _split_text(text: str, limit: int) -> list[str]:
         chunks.append(text[:idx])
         text = text[idx:].lstrip("\n")
     return chunks
-
-
-def _strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", "", text)
 
 
 def _extract_forward_source(message: Message) -> str:

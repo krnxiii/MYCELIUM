@@ -21,6 +21,8 @@ _SYSTEM_PROMPT = (
     "add, and manage the user's knowledge graph. "
     "ALWAYS use mcp__mycelium__search to answer questions about what the user knows. "
     "Use mcp__mycelium__add_signal to capture new information. "
+    "For files/photos: use vault_store(file_path) to save in vault, "
+    "then add_signal with content description, then vault_link to connect them. "
     "If a tool call fails, retry it once. "
     "Always report what happened: which tool, what error, whether retry helped. "
     "Respond concisely in the user's language. "

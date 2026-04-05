@@ -49,6 +49,7 @@ services:
       MYCELIUM_OBSIDIAN__ENABLED: ${MYCELIUM_OBSIDIAN__ENABLED:-true}
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
+      - tg_uploads:/tmp/tg-uploads
       - ~/.claude:/root/.claude:ro
       - ~/.claude.json:/root/.claude.json:ro
     depends_on:
@@ -79,6 +80,7 @@ services:
       MYCELIUM_TELEGRAM__STT_MODEL: ${MYCELIUM_TELEGRAM__STT_MODEL:-medium}
       MYCELIUM_TELEGRAM__STT_LANGUAGE: ${MYCELIUM_TELEGRAM__STT_LANGUAGE:-auto}
     volumes:
+      - tg_uploads:/tmp/tg-uploads
       - ~/.claude:/root/.claude
       - ~/.claude.json:/root/.claude.json
     depends_on:
@@ -158,5 +160,6 @@ services:
     restart: unless-stopped
 
 volumes:
+  tg_uploads:
   syncthing_config:
   tailscale_state:
