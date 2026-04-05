@@ -257,21 +257,62 @@ configure_env() {
         warn "Telegram skipped — add MYCELIUM_TELEGRAM__BOT_TOKEN to .env later"
     fi
 
-    # Store embeddings mode + telegram flag for compose profiles
+    # ── STT (voice input) ──
+    if [[ -n "$tg_token" ]]; then
+        echo
+        info "Voice input: transcribe voice messages in Telegram."
+        printf "  ${BOLD}1)${NC}  Deepgram API   — cloud, fast, accurate (needs API key)\n" >&2
+        printf "  ${BOLD}2)${NC}  Whisper local  — runs on device, no external API (downloads ~1 GB model)\n" >&2
+        printf "  ${BOLD}3)${NC}  None           — no voice input\n" >&2
+        echo >&2
+        local stt_choice
+        stt_choice="$(ask "STT provider [1/2/3]" "3")"
+        case "$stt_choice" in
+            1)
+                set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "deepgram"
+                info "Get API key at: https://console.deepgram.com"
+                local stt_key
+                stt_key="$(ask_secret "Deepgram API key")"
+                if [[ -n "$stt_key" ]]; then
+                    set_env_val "MYCELIUM_TELEGRAM__STT_API_KEY" "$stt_key"
+                    success "Deepgram configured"
+                else
+                    warn "No key — set MYCELIUM_TELEGRAM__STT_API_KEY in .env later"
+                fi
+                ;;
+            2)
+                set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "whisper-local"
+                success "Whisper local configured"
+                ;;
+            *)
+                set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "none"
+                info "Voice input disabled"
+                ;;
+        esac
+    fi
+
+    # Store flags for compose profiles
     echo "MYCELIUM_VPS_EMB_MODE=$emb_mode" >> "$ENV_FILE"
     [[ -n "$tg_token" ]] && echo "MYCELIUM_VPS_TELEGRAM=1" >> "$ENV_FILE"
+    [[ "${stt_choice:-}" == "2" ]] && echo "MYCELIUM_VPS_WHISPER=1" >> "$ENV_FILE"
     success ".env configured"
 }
 
 # ── Deploy ──────────────────────────────────────────────────────────
 deploy() {
-    local emb_mode tg_mode
+    local emb_mode tg_mode whisper_mode
     emb_mode="$(grep '^MYCELIUM_VPS_EMB_MODE=' "$ENV_FILE" | cut -d= -f2)"
     tg_mode="$(grep '^MYCELIUM_VPS_TELEGRAM=' "$ENV_FILE" | cut -d= -f2)"
+    whisper_mode="$(grep '^MYCELIUM_VPS_WHISPER=' "$ENV_FILE" | cut -d= -f2)"
+
+    # Create directories for bind mounts
+    local data_dir="${MYCELIUM_DATA_DIR:-$HOME/.mycelium}"
+    mkdir -p "$data_dir/syncthing" "$data_dir/vault"
 
     local compose_cmd="docker compose -f $COMPOSE_FILE"
-    [[ "$emb_mode" == "2" ]] && compose_cmd="$compose_cmd --profile full"
-    [[ "$tg_mode" == "1" ]]  && compose_cmd="$compose_cmd --profile telegram"
+    [[ "$emb_mode" == "2" ]]    && compose_cmd="$compose_cmd --profile full"
+    [[ "$tg_mode" == "1" ]]     && compose_cmd="$compose_cmd --profile telegram"
+    [[ "$whisper_mode" == "1" ]] && compose_cmd="$compose_cmd --profile voice-whisper"
 
     info "Pulling images..."
     $compose_cmd pull
@@ -288,6 +329,15 @@ show_summary() {
     local token
     token="$(grep '^MYCELIUM_MCP__AUTH_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
 
+    # Try to get Syncthing device ID
+    local st_id=""
+    for i in 1 2 3; do
+        st_id="$(curl -sf http://localhost:8384/rest/system/status 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["myID"])' 2>/dev/null || echo "")"
+        [[ -n "$st_id" ]] && break
+        sleep 2
+    done
+
     echo
     printf "  ${BOLD}${GREEN}MYCELIUM VPS is ready!${NC}\n"
     echo
@@ -296,6 +346,12 @@ show_summary() {
     printf "  %-22s %s\n" "MCP (HTTP)"            "http://<tailscale-ip>:9631/mcp"
     printf "  %-22s %s\n" "Neo4j Browser"         "http://<tailscale-ip>:7474"
     printf "  %-22s %s\n" "Syncthing UI"          "http://<tailscale-ip>:8384"
+
+    if [[ -n "$st_id" ]]; then
+        echo
+        printf "  ${BOLD}Syncthing Device ID (for pairing):${NC}\n"
+        printf "  ${CYAN}%s${NC}\n" "$st_id"
+    fi
 
     echo
     printf "  ${BOLD}On your laptop:${NC}\n"
@@ -312,9 +368,14 @@ show_summary() {
     printf "    --header \"Authorization: Bearer %s\" \\\\\n" "$token"
     printf "    mycelium http://<tailscale-ip>:9631/mcp\n"
     echo
-    printf "  ${DIM}# 4. Set up Syncthing for vault sync (optional)${NC}\n"
-    printf "  brew install syncthing\n"
-    printf "  ${DIM}# Open http://<tailscale-ip>:8384 and pair devices${NC}\n"
+    printf "  ${DIM}# 4. Vault sync (Syncthing)${NC}\n"
+    printf "  brew install --cask syncthing\n"
+    if [[ -n "$st_id" ]]; then
+        printf "  ${DIM}# Add remote device with ID shown above${NC}\n"
+        printf "  ${DIM}# Share folder: ~/.mycelium/vault${NC}\n"
+    else
+        printf "  ${DIM}# Open http://<tailscale-ip>:8384 and pair devices${NC}\n"
+    fi
     echo
 }
 
