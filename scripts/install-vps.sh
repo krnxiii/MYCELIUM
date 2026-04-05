@@ -330,15 +330,15 @@ deploy() {
     [[ "$tg_mode" == "1" ]]     && compose_cmd="$compose_cmd --profile telegram"
     [[ "$whisper_mode" == "1" ]] && compose_cmd="$compose_cmd --profile voice-whisper"
 
-    $compose_cmd pull &
+    $compose_cmd pull >/dev/null 2>&1 &
     spin $! "Pulling images..."
     success "Images pulled"
 
-    $compose_cmd up -d --build &
+    $compose_cmd up -d --build >/dev/null 2>&1 &
     spin $! "Building & starting MYCELIUM..."
     success "Containers started"
 
-    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app &
+    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app >/dev/null 2>&1 &
     spin $! "Waiting for healthy services..."
     success "All services healthy"
 }
