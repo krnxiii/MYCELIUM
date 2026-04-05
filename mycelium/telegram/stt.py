@@ -40,7 +40,10 @@ class WhisperLocalSTT:
                 data=data,
             )
             resp.raise_for_status()
-            return resp.json()["text"].strip()
+            transcript = resp.json()["text"].strip()
+            log.info("stt.transcribed", provider="whisper",
+                     transcript=transcript[:100], audio_bytes=len(audio))
+            return transcript
 
 
 class DeepgramSTT:
@@ -82,9 +85,9 @@ class DeepgramSTT:
                 data["results"]["channels"][0]["alternatives"][0]["transcript"]
                 .strip()
             )
-            log.debug("deepgram.result", transcript=transcript[:100],
-                       audio_bytes=len(audio),
-                       confidence=data["results"]["channels"][0]["alternatives"][0].get("confidence"))
+            log.info("stt.transcribed", provider="deepgram",
+                      transcript=transcript[:100], audio_bytes=len(audio),
+                      confidence=data["results"]["channels"][0]["alternatives"][0].get("confidence"))
             return transcript
 
 
