@@ -12,8 +12,8 @@ import structlog
 
 log = structlog.get_logger()
 
-# Tools the agent is allowed to use: MCP + Read (for image analysis)
-_ALLOWED_TOOLS = "mcp__mycelium__*,Read"
+# Tools the agent is allowed to use (broad: container limits blast radius)
+_ALLOWED_TOOLS = "mcp__mycelium__*,Read,Glob,Grep,Bash"
 
 _SYSTEM_PROMPT = (
     "You are MYCELIUM assistant — a personal knowledge graph interface. "
