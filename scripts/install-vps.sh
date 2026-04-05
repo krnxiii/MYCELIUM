@@ -361,10 +361,12 @@ show_summary() {
     local token
     token="$(grep '^MYCELIUM_MCP__AUTH_TOKEN=' "$ENV_FILE" | cut -d= -f2)"
 
-    # Try to get Syncthing device ID
-    local st_id=""
+    # Try to get Syncthing device ID (API requires auth)
+    local st_id="" st_api_key=""
+    local data_dir="${MYCELIUM_DATA_DIR:-$HOME/.mycelium}"
+    st_api_key="$(sed -n 's/.*<apikey>\(.*\)<\/apikey>.*/\1/p' "$data_dir/syncthing/config/config.xml" 2>/dev/null || true)"
     for i in 1 2 3; do
-        st_id="$(curl -sf http://localhost:8384/rest/system/status 2>/dev/null \
+        st_id="$(curl -sf -H "X-API-Key: $st_api_key" http://localhost:8384/rest/system/status 2>/dev/null \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["myID"])' 2>/dev/null || echo "")"
         [[ -n "$st_id" ]] && break
         sleep 2

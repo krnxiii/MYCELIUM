@@ -135,7 +135,7 @@ services:
       - PUID=1000
       - PGID=1000
     volumes:
-      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/syncthing:/var/syncthing/config
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/syncthing:/var/syncthing
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/var/syncthing/vault
     ports:
       - "8384:8384"   # Web UI (access via Tailscale only)
