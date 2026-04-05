@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 
 # ── Colors & Constants ──────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -59,7 +60,6 @@ spin_start() {
         done
     ) &
     _spinner_pid=$!
-    disown "$_spinner_pid" 2>/dev/null
 }
 
 spin_stop() {
@@ -341,8 +341,7 @@ setup_syncthing() {
     fi
 
     local api_key
-    api_key="$(grep -oP '(?<=<apikey>)[^<]+' "$config_file" 2>/dev/null \
-        || sed -n 's/.*<apikey>\(.*\)<\/apikey>.*/\1/p' "$config_file" 2>/dev/null \
+    api_key="$(sed -n 's/.*<apikey>\(.*\)<\/apikey>.*/\1/p' "$config_file" 2>/dev/null \
         || echo "")"
 
     if [[ -z "$api_key" ]]; then

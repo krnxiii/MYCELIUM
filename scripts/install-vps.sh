@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 
 # ── Colors & Constants ──────────────────────────────────────────────
 CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'; BGREEN='\033[1;32m'
@@ -54,10 +55,10 @@ spin() {
     while kill -0 "$pid" 2>/dev/null; do
         printf "\r  ${DIM}%s${NC} %s" "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$label" >&2
         sleep 0.1
-        ((i++))
+        ((i++)) || true  # ((0)) returns 1 in bash 5.x, must not trigger set -e
     done
     printf "\r\033[K" >&2
-    wait "$pid"
+    wait "$pid" || return $?  # propagate exit code without set -e killing us
 }
 
 set_env_val() {
@@ -132,8 +133,11 @@ setup_claude_cli() {
         install_choice="$(ask "Install Claude Code CLI? [Y/n]" "y")"
         if [[ "$install_choice" =~ ^[Yy]?$ ]]; then
             printf '\n'
-            curl -fsSL https://claude.ai/install.sh | bash &
-            spin $! "Installing Claude Code CLI..."
+            (curl -fsSL https://claude.ai/install.sh | bash) >/dev/null 2>&1 &
+            if ! spin $! "Installing Claude Code CLI..."; then
+                warn "Installation failed. Install later: curl -fsSL https://claude.ai/install.sh | bash"
+                return
+            fi
             # Pick up new binary in current session
             export PATH="$HOME/.local/bin:$HOME/.claude/bin:$PATH"
             if ! command -v claude &>/dev/null; then
@@ -157,8 +161,7 @@ setup_claude_cli() {
         local login_choice
         login_choice="$(ask "Login now? [Y/n]" "y")"
         if [[ "$login_choice" =~ ^[Yy]?$ ]]; then
-            claude auth login
-            if [[ $? -eq 0 ]]; then
+            if claude auth login; then
                 success "Claude Code authenticated"
             else
                 warn "Login failed or cancelled. Run 'claude auth login' later."
@@ -330,17 +333,27 @@ deploy() {
     [[ "$tg_mode" == "1" ]]     && compose_cmd="$compose_cmd --profile telegram"
     [[ "$whisper_mode" == "1" ]] && compose_cmd="$compose_cmd --profile voice-whisper"
 
-    $compose_cmd pull >/dev/null 2>&1 &
-    spin $! "Pulling images..."
+    local logfile
+    logfile="$(mktemp)"
+
+    $compose_cmd pull >>"$logfile" 2>&1 &
+    if ! spin $! "Pulling images..."; then
+        error "docker compose pull failed:"; tail -5 "$logfile" >&2; rm -f "$logfile"; exit 1
+    fi
     success "Images pulled"
 
-    $compose_cmd up -d --build >/dev/null 2>&1 &
-    spin $! "Building & starting MYCELIUM..."
+    $compose_cmd up -d --build >>"$logfile" 2>&1 &
+    if ! spin $! "Building & starting MYCELIUM..."; then
+        error "docker compose up failed:"; tail -10 "$logfile" >&2; rm -f "$logfile"; exit 1
+    fi
     success "Containers started"
 
-    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app >/dev/null 2>&1 &
-    spin $! "Waiting for healthy services..."
+    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app >>"$logfile" 2>&1 &
+    if ! spin $! "Waiting for healthy services..."; then
+        error "Health check failed:"; tail -5 "$logfile" >&2; rm -f "$logfile"; exit 1
+    fi
     success "All services healthy"
+    rm -f "$logfile"
 }
 
 # ── Summary ─────────────────────────────────────────────────────────

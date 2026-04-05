@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 
 # ── Colors & Constants ──────────────────────────────────────────────
 CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'
@@ -52,10 +53,10 @@ spin() {
     while kill -0 "$pid" 2>/dev/null; do
         printf "\r  ${DIM}%s${NC} %s" "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$label" >&2
         sleep 0.1
-        ((i++))
+        ((i++)) || true
     done
     printf "\r\033[K" >&2
-    wait "$pid"
+    wait "$pid" || return $?
 }
 
 set_env_val() {
@@ -348,8 +349,11 @@ generate_env() {
 # ── Install uv (if missing, scenario 1 only) ───────────────────────
 ensure_uv() {
     if check_uv; then return 0; fi
-    curl -LsSf https://astral.sh/uv/install.sh | sh &
-    spin $! "Installing uv..."
+    (curl -LsSf https://astral.sh/uv/install.sh | sh) >/dev/null 2>&1 &
+    if ! spin $! "Installing uv..."; then
+        error "uv installation failed. Install manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     if check_uv; then
         success "uv installed"
