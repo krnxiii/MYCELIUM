@@ -354,18 +354,20 @@ show_summary() {
     fi
 
     echo
-    printf "  ${BOLD}On your laptop — one command:${NC}\n"
+    printf "  ${BOLD}On your laptop:${NC}\n"
     echo
-    printf "  ${CYAN}bash <(curl -fsSL https://raw.githubusercontent.com/krnxiii/MYCELIUM/main/scripts/connect-vps.sh)${NC}\n"
+    printf "  ${CYAN}git clone https://github.com/krnxiii/MYCELIUM && cd MYCELIUM${NC}\n"
+    printf "  ${CYAN}bash scripts/install.sh${NC}  ${DIM}→ choose \"4) Connect to VPS\"${NC}\n"
     echo
-    printf "  ${DIM}It will ask for:${NC}\n"
+    printf "  ${DIM}Script will ask for:${NC}\n"
     printf "  ${DIM}  - VPS hostname/IP (Tailscale)${NC}\n"
     printf "  ${DIM}  - MCP token: %s${NC}\n" "$token"
     if [[ -n "$st_id" ]]; then
         printf "  ${DIM}  - Syncthing ID: %s${NC}\n" "$st_id"
     fi
     echo
-    printf "  ${DIM}Handles: MCP registration, skills, vault sync — no repo needed.${NC}\n"
+    printf "  ${DIM}Alternative (no repo clone):${NC}\n"
+    printf "  ${DIM}bash <(curl -fsSL https://raw.githubusercontent.com/krnxiii/MYCELIUM/main/scripts/connect-vps.sh)${NC}\n"
     echo
 }
 

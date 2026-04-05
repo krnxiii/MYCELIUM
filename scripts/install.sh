@@ -237,7 +237,7 @@ select_scenario() {
     printf "  ${BOLD}1)${NC}  Local dev       — Python on host, Neo4j in Docker, embeddings via API\n" >&2
     printf "  ${BOLD}2)${NC}  Docker + API    — everything in Docker, embeddings via DeepInfra API\n" >&2
     printf "  ${BOLD}3)${NC}  Full Docker     — everything local, no external APIs (downloads ~2 GB model)\n" >&2
-    printf "  ${BOLD}4)${NC}  VPS (remote)    — deploy Data Node on VPS (→ scripts/install-vps.sh)\n" >&2
+    printf "  ${BOLD}4)${NC}  Connect to VPS  — link this machine to an existing VPS deployment\n" >&2
     echo >&2
 
     while true; do
@@ -389,10 +389,6 @@ run_scenario() {
             info "Running: make quickstart-docker"
             warn "First run downloads BGE-M3 model for local embeddings. This may take a while."
             make quickstart-docker
-            ;;
-        4)
-            info "Switching to VPS installer..."
-            exec bash scripts/install-vps.sh
             ;;
     esac
 }
@@ -562,12 +558,12 @@ main() {
     step "1/6" "Select installation scenario"
     local scenario
     scenario="$(select_scenario)"
-    local labels=( [1]="Local dev" [2]="Docker + API" [3]="Full Docker" [4]="VPS (remote)" )
+    local labels=( [1]="Local dev" [2]="Docker + API" [3]="Full Docker" [4]="Connect to VPS" )
     success "Scenario $scenario: ${labels[$scenario]}"
 
-    # Scenario 4 delegates to install-vps.sh (exec, no return)
+    # Scenario 4: connect laptop to existing VPS (exec, no return)
     if [[ "$scenario" == "4" ]]; then
-        run_scenario "4"
+        exec bash scripts/connect-vps.sh
     fi
 
     # Step 2: Check dependencies (based on scenario)

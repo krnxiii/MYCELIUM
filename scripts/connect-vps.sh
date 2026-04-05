@@ -106,10 +106,7 @@ check_deps() {
 # ── Step 2: Collect VPS Info ─────────────────────────────────────────
 collect_vps_info() {
     echo
-    info "You'll need these values from the VPS installer output:"
-    info "  - VPS Tailscale hostname or IP"
-    info "  - MCP auth token"
-    info "  - Syncthing Device ID (for vault sync)"
+    info "You'll need 3 values from the VPS installer output."
     echo
 
     VPS_HOST="$(ask "VPS Tailscale hostname or IP")"
@@ -438,22 +435,20 @@ main() {
     printf "  ${BOLD}${CYAN}MYCELIUM${NC} — connect to VPS\n"
     printf "  ${DIM}Set up laptop to use remote MYCELIUM Data Node${NC}\n"
 
-    step "1/6" "Checking dependencies"
+    step "1/5" "Checking dependencies"
     check_deps
 
-    step "2/6" "VPS connection info"
+    step "2/5" "VPS connection info"
     collect_vps_info
 
-    step "3/6" "Testing connectivity"
+    step "3/5" "Testing connectivity"
     test_connectivity
 
-    step "4/6" "Registering MCP server"
+    step "4/5" "Setting up Claude Code"
     register_mcp
-
-    step "5/6" "Installing skills"
     install_skills
 
-    step "6/6" "Setting up vault sync"
+    step "5/5" "Setting up vault sync"
     setup_syncthing
 
     show_summary
