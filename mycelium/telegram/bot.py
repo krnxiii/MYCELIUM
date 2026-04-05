@@ -229,9 +229,14 @@ async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
     log.info("msg.photo", chat_id=message.chat.id, path=str(path),
              size=path.stat().st_size, caption_len=len(caption))
 
-    text = f"[Photo saved at {path}]"
+    text = (
+        f"User sent a photo (saved at {path}). "
+        "Use vault_store to save it in the vault. "
+        "You CANNOT see or read image files — do NOT attempt to read the file. "
+        "Just store it and confirm to the user."
+    )
     if caption:
-        text += f" Caption: {caption}"
+        text += f" Also process the caption as a signal: {caption}"
     await _stream_dispatch(message, dispatcher, text)
 
 
@@ -269,11 +274,25 @@ async def handle_document(message: Message, dispatcher: Dispatcher) -> None:
     log.info("msg.document", chat_id=message.chat.id, filename=orig_name,
              size=path.stat().st_size)
 
-    text = f"[Document: {orig_name}, saved at {path}]"
-    if caption:
-        text += f" Caption: {caption}"
     if content_preview:
+        # Text file: agent gets full content
+        text = (
+            f"User sent a text document: {orig_name} (saved at {path}). "
+            "Use vault_store to save it, then process the content with add_signal."
+        )
+        if caption:
+            text += f" Caption: {caption}"
         text += f"\n\nContent:\n{content_preview}"
+    else:
+        # Binary file: agent can only store
+        text = (
+            f"User sent a document: {orig_name} (saved at {path}). "
+            "Use vault_store to save it in the vault. "
+            "You CANNOT read binary files — do NOT attempt to read the file. "
+            "Just store it and confirm to the user."
+        )
+        if caption:
+            text += f" Also process the caption as a signal: {caption}"
     await _stream_dispatch(message, dispatcher, text)
 
 
