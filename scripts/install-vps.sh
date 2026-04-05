@@ -2,42 +2,62 @@
 set -euo pipefail
 
 # ── Colors & Constants ──────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'
-DIM='\033[2m'; NC='\033[0m'
+CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'; BGREEN='\033[1;32m'
+YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 COMPOSE_FILE="docker-compose.vps.yml"
 ENV_FILE=".env"
 ENV_EXAMPLE=".env.example"
 
+BRAILLE=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
 # ── Helpers ─────────────────────────────────────────────────────────
-info()    { printf "${BLUE}ℹ${NC}  %s\n" "$1"; }
-success() { printf "${GREEN}✓${NC}  %s\n" "$1"; }
-warn()    { printf "${YELLOW}⚠${NC}  %s\n" "$1"; }
-error()   { printf "${RED}✗${NC}  %s\n" "$1" >&2; }
-step()    { printf "\n${BOLD}${CYAN}[%s]${NC} %s\n" "$1" "$2"; }
+success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
+warn()    { printf "  ${YELLOW}!${NC}  %s\n" "$1"; }
+error()   { printf "  ${RED}✗${NC}  %s\n" "$1" >&2; }
+hint()    { printf "    ${DIM}%s${NC}\n" "$1" >&2; }
+
+step() {
+    printf "\n${BOLD}${BCYAN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
+}
+
+sep() {
+    printf "${DIM}  ─────────────────────────────────────────────${NC}\n"
+}
 
 ask() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -r answer
-    echo "${answer:-$default}"
+    printf '%s' "${answer:-$default}"
 }
 
 ask_secret() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -rs answer
-    echo >&2
-    echo "${answer:-$default}"
+    printf '\n' >&2
+    printf '%s' "${answer:-$default}"
+}
+
+spin() {
+    local pid=$1 label="${2:-}"
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${DIM}%s${NC} %s" "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$label" >&2
+        sleep 0.1
+        ((i++))
+    done
+    printf "\r\033[K" >&2
+    wait "$pid"
 }
 
 set_env_val() {
@@ -61,41 +81,38 @@ detect_project_root() {
         error "Cannot find $COMPOSE_FILE in project root"
         exit 1
     fi
-    echo "$dir"
+    printf '%s' "$dir"
 }
 
 # ── Dependency Checks ──────────────────────────────────────────────
 check_deps() {
     local all_ok=true
 
-    printf "\n  %-22s %s\n" "Dependency" "Status"
-    printf "  %-22s %s\n" "──────────────────────" "──────"
-
     for cmd in docker make curl; do
         if command -v "$cmd" &>/dev/null; then
-            printf "  %-22s ${GREEN}✓ found${NC}\n" "$cmd"
+            printf "  ${DIM}├─${NC} %-18s ${GREEN}found${NC}\n" "$cmd"
         else
-            printf "  %-22s ${RED}✗ missing${NC}\n" "$cmd"
+            printf "  ${DIM}├─${NC} %-18s ${RED}missing${NC}\n" "$cmd"
             all_ok=false
         fi
     done
 
     if docker compose version &>/dev/null; then
-        printf "  %-22s ${GREEN}✓ found${NC}\n" "docker compose"
+        printf "  ${DIM}├─${NC} %-18s ${GREEN}found${NC}\n" "docker compose"
     else
-        printf "  %-22s ${RED}✗ missing${NC}\n" "docker compose"
+        printf "  ${DIM}├─${NC} %-18s ${RED}missing${NC}\n" "docker compose"
         all_ok=false
     fi
 
     if docker info &>/dev/null; then
-        printf "  %-22s ${GREEN}✓ running${NC}\n" "docker daemon"
+        printf "  ${DIM}└─${NC} %-18s ${GREEN}running${NC}\n" "docker daemon"
     else
-        printf "  %-22s ${RED}✗ not running${NC}\n" "docker daemon"
+        printf "  ${DIM}└─${NC} %-18s ${RED}not running${NC}\n" "docker daemon"
         all_ok=false
     fi
 
-    echo
     if [[ "$all_ok" == false ]]; then
+        printf '\n'
         error "Fix missing dependencies and re-run."
         exit 1
     fi
@@ -107,15 +124,16 @@ setup_claude_cli() {
     if command -v claude &>/dev/null; then
         success "Claude Code CLI found: $(command -v claude)"
     else
-        echo
-        info "Claude Code CLI is needed for knowledge extraction."
-        info "Without it, signals are saved but neurons won't be extracted."
-        echo
+        printf '\n'
+        warn "Claude Code CLI not found"
+        hint "Needed for knowledge extraction. Without it, signals are saved but neurons won't be extracted."
+        printf '\n'
         local install_choice
         install_choice="$(ask "Install Claude Code CLI? [Y/n]" "y")"
         if [[ "$install_choice" =~ ^[Yy]?$ ]]; then
-            info "Installing..."
-            curl -fsSL https://claude.ai/install.sh | bash
+            printf '\n'
+            curl -fsSL https://claude.ai/install.sh | bash &
+            spin $! "Installing Claude Code CLI..."
             # Pick up new binary in current session
             export PATH="$HOME/.local/bin:$HOME/.claude/bin:$PATH"
             if ! command -v claude &>/dev/null; then
@@ -134,8 +152,8 @@ setup_claude_cli() {
     if [[ -d "$HOME/.claude" ]] && claude -p "echo ok" &>/dev/null 2>&1; then
         success "Claude Code authenticated"
     else
-        echo
-        info "Claude Code needs authentication."
+        printf '\n'
+        warn "Claude Code needs authentication"
         local login_choice
         login_choice="$(ask "Login now? [Y/n]" "y")"
         if [[ "$login_choice" =~ ^[Yy]?$ ]]; then
@@ -159,15 +177,15 @@ generate_token() {
 
 # ── Embeddings Mode ────────────────────────────────────────────────
 select_embeddings() {
-    echo >&2
-    printf "  ${BOLD}1)${NC}  DeepInfra API  — no local GPU needed (default)\n" >&2
-    printf "  ${BOLD}2)${NC}  Local TEI      — BGE-M3 on VPS CPU (downloads ~2 GB model)\n" >&2
-    echo >&2
+    printf '\n' >&2
+    printf "  ${BOLD}1)${NC}  DeepInfra API  ${DIM}— no local GPU needed${NC}\n" >&2
+    printf "  ${BOLD}2)${NC}  Local TEI      ${DIM}— BGE-M3 on VPS CPU (~2 GB download)${NC}\n" >&2
+    printf '\n' >&2
     while true; do
         local choice
         choice="$(ask "Embeddings mode [1/2]" "1")"
         case "$choice" in
-            1|2) echo "$choice"; return ;;
+            1|2) printf '%s' "$choice"; return ;;
             *) warn "Enter 1 or 2" >&2 ;;
         esac
     done
@@ -188,25 +206,26 @@ configure_env() {
     token="$(generate_token)"
     set_env_val "MYCELIUM_MCP__AUTH_TOKEN" "$token"
     success "Auth token generated"
-    echo
-    info "Save this token — you'll need it on your laptop to connect:"
-    printf "\n  ${BOLD}${CYAN}%s${NC}\n\n" "$token"
+    printf "\n  ${DIM}Save this — you'll need it on your laptop:${NC}\n"
+    printf "  ${BOLD}${CYAN}%s${NC}\n" "$token"
 
     # ── Neo4j password ──
+    sep
     local neo4j_pass
     neo4j_pass="$(ask_secret "Neo4j password" "password")"
     [[ "${#neo4j_pass}" -lt 4 ]] && neo4j_pass="password"
     set_env_val "MYCELIUM_NEO4J__PASSWORD" "$neo4j_pass"
 
     # ── Embeddings ──
+    sep
     local emb_mode
     emb_mode="$(select_embeddings)"
     if [[ "$emb_mode" == "1" ]]; then
-        info "Get a free key at: https://deepinfra.com/dash/api_keys"
         local api_key
         api_key="$(ask_secret "DeepInfra API key")"
+        hint "Free key: https://deepinfra.com/dash/api_keys"
         if [[ -z "$api_key" ]]; then
-            warn "No key provided — set MYCELIUM_SEMANTIC__API_KEY in .env later"
+            warn "No key — set MYCELIUM_SEMANTIC__API_KEY in .env later"
         else
             set_env_val "MYCELIUM_SEMANTIC__API_KEY" "$api_key"
         fi
@@ -216,69 +235,58 @@ configure_env() {
     fi
 
     # ── Owner ──
-    echo
+    sep
     local owner_name
-    owner_name="$(ask "Your name (optional, for graph ownership)" "")"
+    owner_name="$(ask "Your name" "")"
+    hint "Optional. Used for graph ownership metadata."
     [[ -n "$owner_name" ]] && set_env_val "MYCELIUM_OWNER__NAME" "$owner_name"
 
     # ── Tailscale ──
-    echo
-    info "Tailscale creates a secure network between VPS and your laptop."
-    info "Without it, your laptop won't be able to connect to this VPS."
-    echo
-    info "How to get the key:"
-    info "  1. Go to https://login.tailscale.com (sign up if needed)"
-    info "  2. Settings → Keys → Generate auth key"
-    info "  3. Copy and paste below"
-    echo
+    sep
+    printf "  ${BCYAN}Tailscale${NC}  ${DIM}secure tunnel between VPS and laptop${NC}\n"
     local ts_key
     while true; do
         ts_key="$(ask_secret "Tailscale auth key")"
+        hint "login.tailscale.com -> Settings -> Keys -> Generate auth key"
         if [[ -n "$ts_key" ]]; then
             set_env_val "TAILSCALE_AUTHKEY" "$ts_key"
             break
         fi
-        warn "Tailscale is required for VPS setup. Your laptop needs it to connect."
+        warn "Tailscale is required. Your laptop needs it to connect."
         local skip
-        skip="$(ask "Skip anyway? (system won't be reachable from laptop) [y/N]" "n")"
+        skip="$(ask "Skip anyway? (system won't be reachable) [y/N]" "n")"
         if [[ "$skip" =~ ^[Yy] ]]; then
-            warn "Skipped — add TAILSCALE_AUTHKEY to .env and restart Tailscale later"
+            warn "Skipped — add TAILSCALE_AUTHKEY to .env and restart later"
             break
         fi
     done
 
-    # ── Telegram bot ──
-    echo
-    info "Telegram bot gives you mobile access to the graph."
-    info "Create a bot: https://t.me/BotFather → /newbot"
+    # ── Telegram block (bot + chat_id + STT grouped) ──
+    sep
+    printf "  ${BCYAN}Telegram${NC}  ${DIM}mobile access to the graph${NC}\n"
     local tg_token
-    tg_token="$(ask_secret "Telegram bot token (or empty to skip)")"
+    tg_token="$(ask_secret "Bot token (or empty to skip)")"
+    hint "Create via @BotFather -> /newbot"
+    local stt_choice=""
     if [[ -n "$tg_token" ]]; then
         set_env_val "MYCELIUM_TELEGRAM__BOT_TOKEN" "$tg_token"
         local tg_chat_id
-        info "To find your chat_id: send /start to @userinfobot on Telegram"
-        tg_chat_id="$(ask "Your Telegram chat_id" "0")"
+        tg_chat_id="$(ask "Your chat_id" "0")"
+        hint "Send /start to @userinfobot to find it"
         set_env_val "MYCELIUM_TELEGRAM__OWNER_CHAT_ID" "$tg_chat_id"
-    else
-        warn "Telegram skipped — add MYCELIUM_TELEGRAM__BOT_TOKEN to .env later"
-    fi
 
-    # ── STT (voice input) ──
-    if [[ -n "$tg_token" ]]; then
-        echo
-        info "Voice input: transcribe voice messages in Telegram."
-        printf "  ${BOLD}1)${NC}  Deepgram API   — cloud, fast, accurate (needs API key)\n" >&2
-        printf "  ${BOLD}2)${NC}  Whisper local  — runs on device, no external API (downloads ~1 GB model)\n" >&2
-        printf "  ${BOLD}3)${NC}  None           — no voice input\n" >&2
-        echo >&2
-        local stt_choice
+        printf '\n'
+        printf "    ${DIM}Voice input:${NC}\n"
+        printf "    ${BOLD}1)${NC}  Deepgram   ${DIM}— cloud, fast, accurate${NC}\n"
+        printf "    ${BOLD}2)${NC}  Whisper    ${DIM}— local, no API (~1 GB model)${NC}\n"
+        printf "    ${BOLD}3)${NC}  None\n"
         stt_choice="$(ask "STT provider [1/2/3]" "3")"
         case "$stt_choice" in
             1)
                 set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "deepgram"
-                info "Get API key at: https://console.deepgram.com"
                 local stt_key
                 stt_key="$(ask_secret "Deepgram API key")"
+                hint "https://console.deepgram.com"
                 if [[ -n "$stt_key" ]]; then
                     set_env_val "MYCELIUM_TELEGRAM__STT_API_KEY" "$stt_key"
                     success "Deepgram configured"
@@ -292,15 +300,17 @@ configure_env() {
                 ;;
             *)
                 set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "none"
-                info "Voice input disabled"
                 ;;
         esac
+    else
+        warn "Telegram skipped — add MYCELIUM_TELEGRAM__BOT_TOKEN to .env later"
     fi
 
     # Store flags for compose profiles
-    echo "MYCELIUM_VPS_EMB_MODE=$emb_mode" >> "$ENV_FILE"
-    [[ -n "$tg_token" ]] && echo "MYCELIUM_VPS_TELEGRAM=1" >> "$ENV_FILE"
-    [[ "${stt_choice:-}" == "2" ]] && echo "MYCELIUM_VPS_WHISPER=1" >> "$ENV_FILE"
+    printf 'MYCELIUM_VPS_EMB_MODE=%s\n' "$emb_mode" >> "$ENV_FILE"
+    [[ -n "$tg_token" ]] && printf 'MYCELIUM_VPS_TELEGRAM=1\n' >> "$ENV_FILE"
+    [[ "${stt_choice:-}" == "2" ]] && printf 'MYCELIUM_VPS_WHISPER=1\n' >> "$ENV_FILE"
+    printf '\n'
     success ".env configured"
 }
 
@@ -320,14 +330,17 @@ deploy() {
     [[ "$tg_mode" == "1" ]]     && compose_cmd="$compose_cmd --profile telegram"
     [[ "$whisper_mode" == "1" ]] && compose_cmd="$compose_cmd --profile voice-whisper"
 
-    info "Pulling images..."
-    $compose_cmd pull
+    $compose_cmd pull &
+    spin $! "Pulling images..."
+    success "Images pulled"
 
-    info "Building MYCELIUM..."
-    $compose_cmd up -d --build
+    $compose_cmd up -d --build &
+    spin $! "Building & starting MYCELIUM..."
+    success "Containers started"
 
-    info "Waiting for services..."
-    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app
+    bash scripts/wait-healthy.sh mycelium-neo4j mycelium-app &
+    spin $! "Waiting for healthy services..."
+    success "All services healthy"
 }
 
 # ── Summary ─────────────────────────────────────────────────────────
@@ -344,44 +357,39 @@ show_summary() {
         sleep 2
     done
 
-    echo
-    printf "  ${BOLD}${GREEN}MYCELIUM VPS is ready!${NC}\n"
-    echo
-    printf "  %-22s %s\n" "Service" "Access"
-    printf "  %-22s %s\n" "──────────────────────" "──────────────────────────────"
-    printf "  %-22s %s\n" "MCP (HTTP)"            "http://<tailscale-ip>:9631/mcp"
-    printf "  %-22s %s\n" "Neo4j Browser"         "http://<tailscale-ip>:7474"
-    printf "  %-22s %s\n" "Syncthing UI"          "http://<tailscale-ip>:8384"
-
+    printf '\n'
+    printf "  ${DIM}┌──────────────────────────────────────────────────┐${NC}\n"
+    printf "  ${DIM}│${NC}  ${BGREEN}MYCELIUM VPS is ready${NC}                           ${DIM}│${NC}\n"
+    printf "  ${DIM}├──────────────────────────────────────────────────┤${NC}\n"
+    printf "  ${DIM}│${NC}  ${BCYAN}MCP${NC}       http://<tailscale-ip>:9631/mcp       ${DIM}│${NC}\n"
+    printf "  ${DIM}│${NC}  ${BCYAN}Neo4j${NC}     http://<tailscale-ip>:7474           ${DIM}│${NC}\n"
+    printf "  ${DIM}│${NC}  ${BCYAN}Syncthing${NC} http://<tailscale-ip>:8384           ${DIM}│${NC}\n"
+    printf "  ${DIM}├──────────────────────────────────────────────────┤${NC}\n"
+    printf "  ${DIM}│${NC}  ${BOLD}Token${NC}  ${CYAN}%-37s${NC}${DIM}│${NC}\n" "$token"
     if [[ -n "$st_id" ]]; then
-        echo
-        printf "  ${BOLD}Syncthing Device ID (for pairing):${NC}\n"
-        printf "  ${CYAN}%s${NC}\n" "$st_id"
+    printf "  ${DIM}│${NC}  ${BOLD}Sync${NC}   ${CYAN}%-37s${NC}${DIM}│${NC}\n" "${st_id:0:37}"
+    if [[ ${#st_id} -gt 37 ]]; then
+    printf "  ${DIM}│${NC}         ${CYAN}%-37s${NC}${DIM}│${NC}\n" "${st_id:37}"
     fi
+    fi
+    printf "  ${DIM}└──────────────────────────────────────────────────┘${NC}\n"
 
-    echo
+    printf '\n'
     printf "  ${BOLD}On your laptop:${NC}\n"
-    echo
     printf "  ${CYAN}git clone https://github.com/krnxiii/MYCELIUM && cd MYCELIUM${NC}\n"
-    printf "  ${CYAN}bash scripts/install.sh${NC}  ${DIM}→ choose \"4) Connect to VPS\"${NC}\n"
-    echo
-    printf "  ${DIM}Script will ask for:${NC}\n"
-    printf "  ${DIM}  - VPS hostname/IP (Tailscale)${NC}\n"
-    printf "  ${DIM}  - MCP token: %s${NC}\n" "$token"
-    if [[ -n "$st_id" ]]; then
-        printf "  ${DIM}  - Syncthing ID: %s${NC}\n" "$st_id"
-    fi
-    echo
-    printf "  ${DIM}Alternative (no repo clone):${NC}\n"
+    printf "  ${CYAN}bash scripts/install.sh${NC}  ${DIM}-> choose \"4) Connect to VPS\"${NC}\n"
+    printf '\n'
+    printf "  ${DIM}Or without cloning:${NC}\n"
     printf "  ${DIM}bash <(curl -fsSL https://raw.githubusercontent.com/krnxiii/MYCELIUM/main/scripts/connect-vps.sh)${NC}\n"
-    echo
+    printf '\n'
 }
 
 # ── Main ────────────────────────────────────────────────────────────
 main() {
-    echo
-    printf "  ${BOLD}${CYAN}MYCELIUM${NC} — VPS installer\n"
-    printf "  ${DIM}Deploy Data Node for remote access${NC}\n"
+    printf '\n'
+    printf "  ${BCYAN}╔╦╗╦ ╦╔═╗╔═╗╦  ╦╦ ╦╔╦╗${NC}\n"
+    printf "  ${BCYAN}║║║╚╦╝║  ║╣ ║  ║║ ║║║║${NC}\n"
+    printf "  ${BCYAN}╩ ╩ ╩ ╚═╝╚═╝╩═╝╩╚═╝╩ ╩${NC}  ${DIM}VPS installer${NC}\n"
 
     local root
     root="$(detect_project_root)"
@@ -400,7 +408,7 @@ main() {
     step "4/5" "Deploying services"
     deploy
 
-    step "5/5" "Done!"
+    step "5/5" "Done"
     show_summary
 }
 
