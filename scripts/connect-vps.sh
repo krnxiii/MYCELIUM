@@ -162,15 +162,59 @@ collect_vps_info() {
     hint "Long alphanumeric string from VPS installer output"
 }
 
-# ── Step 3: Test Connectivity ───────────────────────────────────────
+# ── Step 3: Ensure Tailscale + Test Connectivity ─────────────────────
 test_connectivity() {
-    spin_start "Reaching $VPS_HOST via Tailscale..."
+    local os
+    os="$(detect_os)"
 
-    # Ping via Tailscale
+    # Ensure Tailscale is running
+    if ! tailscale status &>/dev/null; then
+        warn "Tailscale not running"
+        hint "Starting Tailscale..."
+        case "$os" in
+            macos)
+                brew services start tailscale 2>/dev/null || true
+                sleep 2
+                ;;
+            linux)
+                sudo systemctl start tailscaled 2>/dev/null || true
+                sleep 2
+                ;;
+        esac
+
+        # Check if connected or needs login
+        if ! tailscale status &>/dev/null; then
+            warn "Tailscale needs authentication"
+            hint "Opening login in browser..."
+            if [[ "$os" == "macos" ]]; then
+                tailscale login 2>/dev/null || sudo tailscale up 2>/dev/null || true
+            else
+                sudo tailscale up 2>/dev/null || true
+            fi
+            # Wait for connection
+            local attempts=0
+            while ! tailscale status &>/dev/null && (( attempts < 30 )); do
+                sleep 1
+                ((attempts++)) || true
+            done
+        fi
+
+        if tailscale status &>/dev/null; then
+            success "Tailscale connected"
+        else
+            warn "Tailscale still not connected"
+        fi
+    else
+        success "Tailscale running"
+    fi
+
+    # Test VPS reachability
+    spin_start "Reaching $VPS_HOST..."
+
     if ! tailscale ping "$VPS_HOST" --timeout=5s &>/dev/null 2>&1; then
-        # Fallback: try direct curl
         if ! curl -sf --connect-timeout 5 "http://$VPS_HOST:9631/mcp" -o /dev/null 2>/dev/null; then
-            spin_stop false "Cannot reach $VPS_HOST -- check Tailscale is connected"
+            spin_stop false "Cannot reach $VPS_HOST"
+            hint "Check that VPS is online and Tailscale is connected on both sides"
             local proceed
             proceed="$(ask "Continue anyway? [y/N]" "n")"
             [[ "$proceed" =~ ^[Yy] ]] || exit 1
@@ -178,7 +222,7 @@ test_connectivity() {
         fi
     fi
 
-    spin_stop true "Tailscale reachable"
+    spin_stop true "VPS reachable"
 
     # Test MCP endpoint
     spin_start "Checking MCP server..."
@@ -188,9 +232,9 @@ test_connectivity() {
         "http://$VPS_HOST:9631/mcp" 2>/dev/null || echo "000")"
 
     case "$http_code" in
-        200|406) spin_stop true  "MCP server reachable (HTTP $http_code)" ;;
+        200|406) spin_stop true  "MCP server reachable" ;;
         401|403) spin_stop false; error "MCP auth failed -- check token"; exit 1 ;;
-        000)     spin_stop false "MCP server not responding -- may not be started yet" ;;
+        000)     spin_stop false "MCP not responding -- VPS may still be starting" ;;
         *)       spin_stop false "MCP returned HTTP $http_code" ;;
     esac
 }
