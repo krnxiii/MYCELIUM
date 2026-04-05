@@ -38,6 +38,8 @@ log = structlog.get_logger()
 
 router = Router()
 
+_EMOJI_SPEECH = "\U0001f4ac"  # 💬
+
 
 # ── Handlers ────────────────────────────────────────────────────────
 
@@ -141,31 +143,8 @@ async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
     text   = message.text or message.caption or ""
     if not text:
         return
-
     log.info("msg.forward", source=source, text_len=len(text), chat_id=message.chat.id)
-    assert message.bot is not None
-    attributed = f"[Forwarded from {source}]\n{text}"
-
-    async with TypingKeepAlive(message):
-        progress = ProgressIndicator(message.bot, message.chat.id)
-        await progress.start()
-        stream      = StreamingDelivery(message.bot, message.chat.id)
-        channel_msg = ChannelMessage(text=attributed, chat_id=str(message.chat.id))
-        last_text     = ""
-        first_content = True
-        async for reply in dispatcher.dispatch(channel_msg):
-            if first_content:
-                await progress.stop()
-                first_content = False
-            if reply.is_stream:
-                await stream.update(reply.text)
-            else:
-                await stream.finalize(reply.text)
-            last_text = reply.text
-        if first_content:
-            await progress.stop()
-        if last_text:
-            await stream.finalize(last_text)
+    await _stream_dispatch(message, dispatcher, f"[Forwarded from {source}]\n{text}")
 
 
 @router.message(F.voice)
@@ -189,9 +168,13 @@ async def handle_voice(
     async with TypingKeepAlive(message):
         # Download voice file
         file = await message.bot.get_file(message.voice.file_id)
-        assert file.file_path is not None
+        if not file.file_path:
+            await message.reply("Failed to download voice file.")
+            return
         buf = await message.bot.download_file(file.file_path)
-        assert buf is not None
+        if not buf:
+            await message.reply("Failed to download voice file.")
+            return
         audio_bytes = buf.read()
 
         # Transcribe
@@ -202,36 +185,18 @@ async def handle_voice(
             await message.reply("Failed to transcribe voice message.")
             return
 
-        if not transcript:
+        if not transcript.strip():
             await message.reply("Could not recognize speech.")
             return
 
         # Show transcript
         await message.reply(
-            f"\U0001f4ac <i>{html.escape(transcript)}</i>",
+            f"{_EMOJI_SPEECH} <i>{html.escape(transcript)}</i>",
             parse_mode=ParseMode.HTML,
         )
 
-        # Route through dispatcher (same as free_text)
-        progress = ProgressIndicator(message.bot, message.chat.id)
-        await progress.start()
-        stream      = StreamingDelivery(message.bot, message.chat.id)
-        channel_msg = ChannelMessage(text=transcript, chat_id=str(message.chat.id))
-        last_text     = ""
-        first_content = True
-        async for reply in dispatcher.dispatch(channel_msg):
-            if first_content:
-                await progress.stop()
-                first_content = False
-            if reply.is_stream:
-                await stream.update(reply.text)
-            else:
-                await stream.finalize(reply.text)
-            last_text = reply.text
-        if first_content:
-            await progress.stop()
-        if last_text:
-            await stream.finalize(last_text)
+    # Route transcript through agent (outside TypingKeepAlive — _stream_dispatch has its own)
+    await _stream_dispatch(message, dispatcher, transcript)
 
 
 @router.message()
@@ -239,28 +204,39 @@ async def free_text(message: Message, dispatcher: Dispatcher) -> None:
     """Catch-all: free text -> agent with streaming delivery."""
     if not message.text:
         return
-
     log.info("msg.text", text_len=len(message.text), chat_id=message.chat.id)
-    assert message.bot is not None
+    await _stream_dispatch(message, dispatcher, message.text)
 
+
+# ── Streaming dispatch helper ────────────────────────────────────
+
+async def _stream_dispatch(
+    message:    Message,
+    dispatcher: Dispatcher,
+    text:       str,
+) -> None:
+    """Stream agent response with progress indicator."""
+    assert message.bot is not None
     async with TypingKeepAlive(message):
         progress = ProgressIndicator(message.bot, message.chat.id)
         await progress.start()
         stream      = StreamingDelivery(message.bot, message.chat.id)
-        channel_msg = ChannelMessage(text=message.text, chat_id=str(message.chat.id))
+        channel_msg = ChannelMessage(text=text, chat_id=str(message.chat.id))
         last_text     = ""
         first_content = True
-        async for reply in dispatcher.dispatch(channel_msg):
+        try:
+            async for reply in dispatcher.dispatch(channel_msg):
+                if first_content:
+                    await progress.stop()
+                    first_content = False
+                if reply.is_stream:
+                    await stream.update(reply.text)
+                else:
+                    await stream.finalize(reply.text)
+                last_text = reply.text
+        finally:
             if first_content:
                 await progress.stop()
-                first_content = False
-            if reply.is_stream:
-                await stream.update(reply.text)
-            else:
-                await stream.finalize(reply.text)
-            last_text = reply.text
-        if first_content:
-            await progress.stop()
         if last_text:
             await stream.finalize(last_text)
 
@@ -303,13 +279,15 @@ def _strip_html(text: str) -> str:
 def _extract_forward_source(message: Message) -> str:
     """Extract human-readable source from forward_origin."""
     origin = message.forward_origin
+    if origin is None:
+        return "unknown"
     if isinstance(origin, MessageOriginUser):
         parts = [origin.sender_user.first_name, origin.sender_user.last_name or ""]
         return " ".join(p for p in parts if p)
     if isinstance(origin, MessageOriginChannel):
         return origin.chat.title or "channel"
     if isinstance(origin, MessageOriginHiddenUser):
-        return origin.sender_user_name
+        return origin.sender_user_name or "hidden user"
     if isinstance(origin, MessageOriginChat):
         return origin.sender_chat.title or "chat"
     return "unknown"
@@ -348,7 +326,7 @@ async def run_bot() -> None:
 
     if not tg.bot_token:
         log.error("telegram.no_token", hint="Set MYCELIUM_TELEGRAM__BOT_TOKEN")
-        return
+        raise SystemExit(1)
 
     # MCP auth: use telegram-specific token, fallback to MCP server token
     mcp_token = tg.mcp_auth_token or cfg.mcp.auth_token
@@ -370,7 +348,11 @@ async def run_bot() -> None:
 
     # Connect to MCP Data Node (for fast mode)
     mcp_client = MCPClient(tg.mcp_url, mcp_token)
-    await mcp_client.connect()
+    try:
+        await mcp_client.connect()
+    except Exception as exc:
+        log.error("telegram.mcp_connect_failed", error=str(exc))
+        raise SystemExit(1) from exc
 
     # Agent for full mode (claude -p subprocess)
     agent = AgentProcess(model=cfg.llm.model)

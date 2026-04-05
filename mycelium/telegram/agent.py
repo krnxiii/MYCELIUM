@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from time import monotonic
 
 import structlog
 
@@ -37,6 +38,9 @@ class AgentChunk:
     usage:      dict = field(default_factory=dict)
 
 
+_SESSION_TTL = 14400  # 4 hours
+
+
 class AgentProcess:
     """Manages claude -p subprocesses with per-chat sessions."""
 
@@ -45,15 +49,30 @@ class AgentProcess:
         model:    str = "sonnet",
         max_turns: int = 10,
     ) -> None:
-        self._model     = model
-        self._max_turns = max_turns
-        self._sessions: dict[str, str] = {}  # chat_id → session_id
-        self._process:  asyncio.subprocess.Process | None = None
-        self._context:  str = ""
+        self._model      = model
+        self._max_turns  = max_turns
+        self._sessions:  dict[str, str]   = {}  # chat_id → session_id
+        self._session_ts: dict[str, float] = {}  # chat_id → last activity
+        self._process:   asyncio.subprocess.Process | None = None
+        self._context:   str = ""
+
+    def has_session(self, chat_id: str) -> bool:
+        """Check if a session exists for chat_id."""
+        return chat_id in self._sessions
 
     def set_context(self, context: str) -> None:
         """Inject graph context into next system prompt."""
         self._context = context
+
+    def _evict_stale(self) -> None:
+        """Remove sessions older than TTL."""
+        now     = monotonic()
+        expired = [k for k, ts in self._session_ts.items() if now - ts > _SESSION_TTL]
+        for k in expired:
+            self._sessions.pop(k, None)
+            self._session_ts.pop(k, None)
+        if expired:
+            log.info("agent.sessions_evicted", count=len(expired))
 
     async def run(
         self,
@@ -187,7 +206,9 @@ class AgentProcess:
 
         # Store session for resume
         if new_session_id:
-            self._sessions[chat_id] = new_session_id
+            self._sessions[chat_id]   = new_session_id
+            self._session_ts[chat_id] = monotonic()
+            self._evict_stale()
             log.info("agent.done", chat_id=chat_id, session_id=new_session_id[:8],
                      response_len=len(prev_text))
 

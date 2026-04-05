@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import AsyncExitStack
 from typing import Any
@@ -24,7 +25,21 @@ class MCPClient:
         self._session:  ClientSession | None = None
         self._stack:    AsyncExitStack | None = None
 
-    async def connect(self) -> None:
+    async def connect(self, retries: int = 5, backoff: float = 2.0) -> None:
+        """Connect with retry + exponential backoff."""
+        for attempt in range(1, retries + 1):
+            try:
+                await self._connect_once()
+                return
+            except Exception as exc:
+                if attempt == retries:
+                    raise
+                delay = backoff * attempt
+                log.warning("mcp_client.connect_retry",
+                            attempt=attempt, delay=delay, error=str(exc))
+                await asyncio.sleep(delay)
+
+    async def _connect_once(self) -> None:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
 

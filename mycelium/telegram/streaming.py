@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import structlog
@@ -11,9 +12,10 @@ from aiogram import Bot
 log = structlog.get_logger()
 
 # Telegram limits
-MAX_MESSAGE_LEN = 4096
+MAX_MESSAGE_LEN   = 4096
 MIN_INITIAL_CHARS = 30
 EDIT_THROTTLE_SEC = 1.0
+EMOJI_THINKING    = "\U0001f914"  # 🤔
 
 
 class ProgressIndicator:
@@ -27,7 +29,7 @@ class ProgressIndicator:
         self._start   = 0.0
 
     async def start(self) -> None:
-        msg = await self._bot.send_message(self._chat_id, "\U0001f914 ...")
+        msg = await self._bot.send_message(self._chat_id, f"{EMOJI_THINKING} ...")
         self._msg_id = msg.message_id
         self._start  = time.monotonic()
         self._task   = asyncio.create_task(self._tick())
@@ -39,7 +41,7 @@ class ProgressIndicator:
                 elapsed = int(time.monotonic() - self._start)
                 try:
                     await self._bot.edit_message_text(
-                        f"\U0001f914 Thinking... ({elapsed}s)",
+                        f"{EMOJI_THINKING} Thinking... ({elapsed}s)",
                         chat_id=self._chat_id,
                         message_id=self._msg_id,
                     )
@@ -52,6 +54,8 @@ class ProgressIndicator:
         """Stop timer, delete progress message. Returns deleted msg_id."""
         if self._task:
             self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
         if self._msg_id:
             try:
                 await self._bot.delete_message(self._chat_id, self._msg_id)

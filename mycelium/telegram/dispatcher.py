@@ -26,7 +26,7 @@ log = structlog.get_logger()
 class ChannelMessage:
     text:     str
     chat_id:  str            = ""
-    files:    list[Path]     = field(default_factory=list)
+    files:    list[Path]     = field(default_factory=list)  # reserved: file attachments
     reply_to: str | None     = None
 
 
@@ -34,7 +34,7 @@ class ChannelMessage:
 class ChannelReply:
     text: str                          # plain text (always present)
     html: str | None         = None    # formatted (channel renders if supported)
-    files: list[Path]        = field(default_factory=list)
+    files: list[Path]        = field(default_factory=list)  # reserved: file attachments
     is_stream: bool          = False   # True = streaming chunk (use editMessageText)
 
 
@@ -63,7 +63,7 @@ class Dispatcher:
     async def _agent_stream(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         """Route free text to claude -p agent, yield streaming chunks."""
         # Build context on first message per chat (no session yet)
-        if not self._agent._sessions.get(msg.chat_id):
+        if not self._agent.has_session(msg.chat_id):
             ctx = await _build_graph_context(self._mcp)
             if ctx:
                 self._agent.set_context(ctx)
@@ -102,6 +102,7 @@ class Dispatcher:
                     yield await self._domains()
                 case _:
                     yield ChannelReply(text=f"Unknown command: {cmd}")
+            log.info("dispatch.fast_done", cmd=cmd, chat_id=msg.chat_id)
         except Exception as exc:
             log.error("dispatcher.error", cmd=cmd, error=str(exc))
             yield ChannelReply(text=f"Error: {exc}")
@@ -121,9 +122,8 @@ class Dispatcher:
         return ChannelReply(text=plain, html=html)
 
     async def _status(self) -> ChannelReply:
-        health  = await self._mcp.call_tool("health")
-        metrics = await self._mcp.call_tool("get_metrics")
-        plain, html = format_health(health, metrics)
+        health = await self._mcp.call_tool("health")
+        plain, html = format_health(health, {})
         return ChannelReply(text=plain, html=html)
 
     async def _today(self) -> ChannelReply:
@@ -173,5 +173,6 @@ async def _build_graph_context(mcp: MCPClient) -> str:
                 parts.append(f"  Domains: {', '.join(domain_names)}")
 
         return "\n".join(parts)
-    except Exception:
+    except Exception as exc:
+        log.warning("dispatcher.context_failed", error=str(exc))
         return ""

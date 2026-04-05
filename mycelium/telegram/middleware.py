@@ -25,13 +25,16 @@ class AuthMiddleware(BaseMiddleware):
 
     def __init__(self, owner_chat_id: int) -> None:
         self.owner_chat_id = owner_chat_id
+        if owner_chat_id == 0:
+            log.warning("auth.open_mode",
+                        hint="MYCELIUM_TELEGRAM__OWNER_CHAT_ID not set — bot accepts all users")
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
     ) -> Any:
         if (
             isinstance(event, Message)
-            and self.owner_chat_id
+            and self.owner_chat_id != 0
             and event.chat.id != self.owner_chat_id
         ):
             log.warning("auth.rejected", chat_id=event.chat.id)
@@ -55,6 +58,7 @@ class RateLimitMiddleware(BaseMiddleware):
         if isinstance(event, Message):
             chat_id = event.chat.id
             now     = time.monotonic()
+            # Atomic in asyncio — no await between read/write
             window  = [t for t in self._timestamps[chat_id] if now - t < 60]
             if len(window) >= self.max_per_minute:
                 log.warning("rate_limit.exceeded", chat_id=chat_id)
