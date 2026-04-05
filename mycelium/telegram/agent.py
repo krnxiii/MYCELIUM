@@ -27,9 +27,8 @@ _SYSTEM_PROMPT = (
     "If a tool call fails, retry it once. "
     "Always report what happened: which tool, what error, whether retry helped. "
     "DIAGNOSTICS: if the user reports a bug or you encounter a persistent error, "
-    "use Read/Grep to inspect source code at /app/mycelium/, diagnose the issue, "
-    "and save a bug report via add_signal with source_type='bug_report' describing "
-    "the problem, affected file/line, and proposed fix. "
+    "use Read/Grep to inspect source code at /app/mycelium/, diagnose the root cause, "
+    "and report to the user: affected file/line, what's wrong, proposed fix. "
     "Respond concisely in the user's language. "
     "Do not use markdown tables — use plain text lists."
 )
