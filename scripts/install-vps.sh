@@ -148,8 +148,8 @@ setup_claude_cli() {
         fi
     fi
 
-    # Check auth
-    if [[ -d "$HOME/.claude" ]] && claude -p "echo ok" &>/dev/null 2>&1; then
+    # Check auth (auth status is instant, unlike claude -p which spawns a full process)
+    if claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
         success "Claude Code authenticated"
     else
         printf '\n'
@@ -387,9 +387,7 @@ show_summary() {
 # ── Main ────────────────────────────────────────────────────────────
 main() {
     printf '\n'
-    printf "  ${BCYAN}╔╦╗╦ ╦╔═╗╔═╗╦  ╦╦ ╦╔╦╗${NC}\n"
-    printf "  ${BCYAN}║║║╚╦╝║  ║╣ ║  ║║ ║║║║${NC}\n"
-    printf "  ${BCYAN}╩ ╩ ╩ ╚═╝╚═╝╩═╝╩╚═╝╩ ╩${NC}  ${DIM}VPS installer${NC}\n"
+    printf "  ${BCYAN}MYCELIUM${NC}  ${DIM}VPS installer${NC}\n"
 
     local root
     root="$(detect_project_root)"
