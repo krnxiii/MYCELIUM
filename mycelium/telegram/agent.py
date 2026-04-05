@@ -75,6 +75,10 @@ class AgentProcess:
         if session_id:
             cmd.extend(["--resume", session_id])
 
+        log.info("agent.started", chat_id=chat_id, model=self._model,
+                 resume=bool(session_id), prompt_len=len(text),
+                 has_context=bool(self._context))
+
         try:
             self._process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -184,6 +188,8 @@ class AgentProcess:
         # Store session for resume
         if new_session_id:
             self._sessions[chat_id] = new_session_id
+            log.info("agent.done", chat_id=chat_id, session_id=new_session_id[:8],
+                     response_len=len(prev_text))
 
         # If we got here without yielding a final chunk
         if prev_text:

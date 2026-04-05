@@ -128,7 +128,7 @@ class SequentialMiddleware(BaseMiddleware):
         # Lock busy — buffer for coalescing, don't block
         if lock.locked():
             self._buffers[chat_id].append(event)
-            log.debug("sequential.buffered", chat_id=chat_id,
+            log.info("sequential.buffered", chat_id=chat_id,
                       queued=len(self._buffers[chat_id]))
             return None
 

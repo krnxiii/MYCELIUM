@@ -142,6 +142,7 @@ async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
     if not text:
         return
 
+    log.info("msg.forward", source=source, text_len=len(text), chat_id=message.chat.id)
     assert message.bot is not None
     attributed = f"[Forwarded from {source}]\n{text}"
 
@@ -174,6 +175,9 @@ async def handle_voice(
     """Voice message -> transcribe -> route as text."""
     if not message.voice or not message.bot:
         return
+
+    log.info("msg.voice", duration=message.voice.duration,
+             file_size=message.voice.file_size, chat_id=message.chat.id)
 
     if stt is None:
         await message.reply(
@@ -236,6 +240,7 @@ async def free_text(message: Message, dispatcher: Dispatcher) -> None:
     if not message.text:
         return
 
+    log.info("msg.text", text_len=len(message.text), chat_id=message.chat.id)
     assert message.bot is not None
 
     async with TypingKeepAlive(message):

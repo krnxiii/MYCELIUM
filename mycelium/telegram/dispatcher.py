@@ -52,10 +52,11 @@ class Dispatcher:
         """Route message to handler, yield replies."""
         text = msg.text.strip()
         if text.startswith("/"):
+            log.info("dispatch.fast", cmd=text.split()[0], chat_id=msg.chat_id)
             async for reply in self._fast(msg):
                 yield reply
         else:
-            # Full mode: free text → claude -p agent with MCP tools
+            log.info("dispatch.agent", chat_id=msg.chat_id, text_len=len(text))
             async for reply in self._agent_stream(msg):
                 yield reply
 
