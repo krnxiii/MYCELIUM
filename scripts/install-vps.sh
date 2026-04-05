@@ -370,22 +370,23 @@ show_summary() {
         sleep 2
     done
 
+    local w=56
+    local rule
+    rule="$(printf '─%.0s' $(seq 1 $w))"
+
     printf '\n'
-    printf "  ${DIM}┌──────────────────────────────────────────────────┐${NC}\n"
-    printf "  ${DIM}│${NC}  ${BGREEN}MYCELIUM VPS is ready${NC}                           ${DIM}│${NC}\n"
-    printf "  ${DIM}├──────────────────────────────────────────────────┤${NC}\n"
-    printf "  ${DIM}│${NC}  ${BCYAN}MCP${NC}       http://<tailscale-ip>:9631/mcp       ${DIM}│${NC}\n"
-    printf "  ${DIM}│${NC}  ${BCYAN}Neo4j${NC}     http://<tailscale-ip>:7474           ${DIM}│${NC}\n"
-    printf "  ${DIM}│${NC}  ${BCYAN}Syncthing${NC} http://<tailscale-ip>:8384           ${DIM}│${NC}\n"
-    printf "  ${DIM}├──────────────────────────────────────────────────┤${NC}\n"
-    printf "  ${DIM}│${NC}  ${BOLD}Token${NC}  ${CYAN}%-37s${NC}${DIM}│${NC}\n" "$token"
+    printf "  ${DIM}┌%s┐${NC}\n" "$rule"
+    printf "  ${DIM}│${NC}  ${BGREEN}%-${w}s${NC}${DIM}│${NC}\n" "MYCELIUM VPS is ready"
+    printf "  ${DIM}├%s┤${NC}\n" "$rule"
+    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "MCP"       "http://<tailscale-ip>:9631/mcp"
+    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "Neo4j"     "http://<tailscale-ip>:7474"
+    printf "  ${DIM}│${NC}  %-12s ${DIM}%-$((w-14))s${NC}${DIM}│${NC}\n" "Syncthing" "http://<tailscale-ip>:8384"
+    printf "  ${DIM}├%s┤${NC}\n" "$rule"
+    printf "  ${DIM}│${NC}  ${BOLD}Token${NC}      ${CYAN}%-$((w-13))s${NC}${DIM}│${NC}\n" "$token"
     if [[ -n "$st_id" ]]; then
-    printf "  ${DIM}│${NC}  ${BOLD}Sync${NC}   ${CYAN}%-37s${NC}${DIM}│${NC}\n" "${st_id:0:37}"
-    if [[ ${#st_id} -gt 37 ]]; then
-    printf "  ${DIM}│${NC}         ${CYAN}%-37s${NC}${DIM}│${NC}\n" "${st_id:37}"
+        printf "  ${DIM}│${NC}  ${BOLD}Sync ID${NC}    ${CYAN}%-$((w-13))s${NC}${DIM}│${NC}\n" "$st_id"
     fi
-    fi
-    printf "  ${DIM}└──────────────────────────────────────────────────┘${NC}\n"
+    printf "  ${DIM}└%s┘${NC}\n" "$rule"
 
     printf '\n'
     printf "  ${BOLD}On your laptop:${NC}\n"
