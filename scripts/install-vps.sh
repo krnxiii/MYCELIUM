@@ -103,59 +103,51 @@ check_deps() {
 
 # ── Claude Code CLI (for LLM extraction) ─────────────────────────
 setup_claude_cli() {
-    local claude_bin=""
-
-    # Find claude CLI
-    for p in claude ~/.local/bin/claude /usr/local/bin/claude; do
-        if command -v "$p" &>/dev/null || [[ -x "$p" ]]; then
-            claude_bin="$p"
-            break
-        fi
-    done
-
-    if [[ -z "$claude_bin" ]]; then
+    # Check if already installed (any method: curl, npm, brew)
+    if command -v claude &>/dev/null; then
+        success "Claude Code CLI found: $(command -v claude)"
+    else
         echo
         info "Claude Code CLI is needed for knowledge extraction."
-        info "Without it, /capture saves signals but won't extract neurons."
+        info "Without it, signals are saved but neurons won't be extracted."
         echo
         local install_choice
-        install_choice="$(ask "Install Claude Code CLI? [y/N]" "n")"
-        if [[ "$install_choice" =~ ^[Yy] ]]; then
-            if ! command -v npm &>/dev/null; then
-                warn "npm not found. Install Node.js first: https://nodejs.org/"
-                warn "Then run: npm install -g @anthropic-ai/claude-code && claude login"
+        install_choice="$(ask "Install Claude Code CLI? [Y/n]" "y")"
+        if [[ "$install_choice" =~ ^[Yy]?$ ]]; then
+            info "Installing..."
+            curl -fsSL https://claude.ai/install.sh | bash
+            # Pick up new binary in current session
+            export PATH="$HOME/.local/bin:$HOME/.claude/bin:$PATH"
+            if ! command -v claude &>/dev/null; then
+                warn "Installation finished but 'claude' not found in PATH."
+                warn "Restart your shell and run 'claude login'."
                 return
             fi
-            info "Installing Claude Code CLI..."
-            npm install -g @anthropic-ai/claude-code
-            claude_bin="claude"
+            success "Claude Code CLI installed"
         else
-            warn "Skipped — extraction will be unavailable. Install later:"
-            printf "  ${DIM}npm install -g @anthropic-ai/claude-code && claude login${NC}\n"
+            warn "Skipped — install later: curl -fsSL https://claude.ai/install.sh | bash"
             return
         fi
-    else
-        success "Claude Code CLI found: $claude_bin"
     fi
 
-    # Check if authenticated
-    if [[ ! -d "$HOME/.claude" ]] || ! "$claude_bin" -p "echo ok" &>/dev/null 2>&1; then
+    # Check auth
+    if [[ -d "$HOME/.claude" ]] && claude -p "echo ok" &>/dev/null 2>&1; then
+        success "Claude Code authenticated"
+    else
         echo
-        info "Claude Code needs authentication (opens URL in browser)."
+        info "Claude Code needs authentication."
         local login_choice
         login_choice="$(ask "Login now? [Y/n]" "y")"
         if [[ "$login_choice" =~ ^[Yy]?$ ]]; then
-            "$claude_bin" login
+            claude login
             if [[ $? -eq 0 ]]; then
                 success "Claude Code authenticated"
             else
-                warn "Login failed or cancelled. Run '$claude_bin login' later."
+                warn "Login failed or cancelled. Run 'claude login' later."
             fi
         else
-            warn "Skipped — run '$claude_bin login' before using extraction."
+            warn "Skipped — run 'claude login' before using extraction."
         fi
-    else
-        success "Claude Code authenticated"
     fi
 }
 
