@@ -143,12 +143,52 @@ async def cmd_domains(message: Message, dispatcher: Dispatcher) -> None:
 @router.message(F.forward_origin)
 async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
     """Forwarded message -> extract source attribution -> route to agent."""
-    source = _extract_forward_source(message)
-    text   = message.text or message.caption or ""
-    if not text:
+    source  = _extract_forward_source(message)
+    prefix  = f"[Forwarded from {source}]"
+    caption = message.text or message.caption or ""
+
+    # Forwarded photo
+    if message.photo:
+        path = await _save_photo(message)
+        if path:
+            text = (
+                f"{prefix} Photo saved at {path}. "
+                "Use vault_store to save it. "
+                "You CANNOT see or read image files — do NOT attempt to read the file."
+            )
+            if caption:
+                text += f" Also process the caption as a signal: {caption}"
+            log.info("msg.forward_photo", source=source, chat_id=message.chat.id)
+            await _stream_dispatch(message, dispatcher, text)
+            return
+
+    # Forwarded document
+    if message.document:
+        path, content = await _save_document(message)
+        if path:
+            orig_name = message.document.file_name or path.name
+            if content:
+                text = f"{prefix} Document: {orig_name} (saved at {path})."
+                if caption:
+                    text += f" Caption: {caption}"
+                text += f"\n\nContent:\n{content}"
+            else:
+                text = (
+                    f"{prefix} Document: {orig_name} (saved at {path}). "
+                    "Use vault_store to save it. "
+                    "You CANNOT read binary files — do NOT attempt to read the file."
+                )
+                if caption:
+                    text += f" Caption: {caption}"
+            log.info("msg.forward_document", source=source, chat_id=message.chat.id)
+            await _stream_dispatch(message, dispatcher, text)
+            return
+
+    # Forwarded text
+    if not caption:
         return
-    log.info("msg.forward", source=source, text_len=len(text), chat_id=message.chat.id)
-    await _stream_dispatch(message, dispatcher, f"[Forwarded from {source}]\n{text}")
+    log.info("msg.forward", source=source, text_len=len(caption), chat_id=message.chat.id)
+    await _stream_dispatch(message, dispatcher, f"{prefix}\n{caption}")
 
 
 @router.message(F.voice)
@@ -205,30 +245,12 @@ async def handle_voice(
 
 @router.message(F.photo)
 async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
-    """Photo → download → save to shared volume → route to agent."""
-    if not message.bot or not message.photo:
+    """Photo → download → save → route to agent."""
+    path = await _save_photo(message)
+    if not path:
         return
-
-    photo = message.photo[-1]  # largest resolution
-    file  = await message.bot.get_file(photo.file_id)
-    if not file.file_path:
-        await message.reply("Failed to get photo.")
-        return
-    buf = await message.bot.download_file(file.file_path)
-    if not buf:
-        await message.reply("Failed to download photo.")
-        return
-
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    ext      = Path(file.file_path).suffix or ".jpg"
-    filename = f"{message.chat.id}_{message.message_id}{ext}"
-    path     = _UPLOAD_DIR / filename
-    path.write_bytes(buf.read())
 
     caption = message.caption or ""
-    log.info("msg.photo", chat_id=message.chat.id, path=str(path),
-             size=path.stat().st_size, caption_len=len(caption))
-
     text = (
         f"User sent a photo (saved at {path}). "
         "Use vault_store to save it in the vault. "
@@ -242,49 +264,23 @@ async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
 
 @router.message(F.document)
 async def handle_document(message: Message, dispatcher: Dispatcher) -> None:
-    """Document → download → save to shared volume → route to agent."""
-    if not message.bot or not message.document:
+    """Document → download → save → route to agent."""
+    path, content = await _save_document(message)
+    if not path:
         return
 
-    doc = message.document
-    file = await message.bot.get_file(doc.file_id)
-    if not file.file_path:
-        await message.reply("Failed to get document.")
-        return
-    buf = await message.bot.download_file(file.file_path)
-    if not buf:
-        await message.reply("Failed to download document.")
-        return
+    orig_name = message.document.file_name or path.name  # type: ignore[union-attr]
+    caption   = message.caption or ""
 
-    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    orig_name = doc.file_name or f"doc_{message.message_id}"
-    filename  = f"{message.chat.id}_{orig_name}"
-    path      = _UPLOAD_DIR / filename
-    path.write_bytes(buf.read())
-
-    # Read text content for text-based files
-    content_preview = ""
-    if path.suffix.lower() in _TEXT_EXTS:
-        try:
-            content_preview = path.read_text(errors="replace")[:4000]
-        except Exception:
-            pass
-
-    caption = message.caption or ""
-    log.info("msg.document", chat_id=message.chat.id, filename=orig_name,
-             size=path.stat().st_size)
-
-    if content_preview:
-        # Text file: agent gets full content
+    if content:
         text = (
             f"User sent a text document: {orig_name} (saved at {path}). "
             "Use vault_store to save it, then process the content with add_signal."
         )
         if caption:
             text += f" Caption: {caption}"
-        text += f"\n\nContent:\n{content_preview}"
+        text += f"\n\nContent:\n{content}"
     else:
-        # Binary file: agent can only store
         text = (
             f"User sent a document: {orig_name} (saved at {path}). "
             "Use vault_store to save it in the vault. "
@@ -303,6 +299,64 @@ async def free_text(message: Message, dispatcher: Dispatcher) -> None:
         return
     log.info("msg.text", text_len=len(message.text), chat_id=message.chat.id)
     await _stream_dispatch(message, dispatcher, message.text)
+
+
+# ── File download helpers ─────────────────────────────────────────
+
+async def _save_photo(message: Message) -> Path | None:
+    """Download largest photo resolution, save to shared upload dir."""
+    if not message.bot or not message.photo:
+        return None
+    photo = message.photo[-1]
+    file  = await message.bot.get_file(photo.file_id)
+    if not file.file_path:
+        await message.reply("Failed to get photo.")
+        return None
+    buf = await message.bot.download_file(file.file_path)
+    if not buf:
+        await message.reply("Failed to download photo.")
+        return None
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    ext      = Path(file.file_path).suffix or ".jpg"
+    filename = f"{message.chat.id}_{message.message_id}{ext}"
+    path     = _UPLOAD_DIR / filename
+    path.write_bytes(buf.read())
+    log.info("file.saved_photo", path=str(path), size=path.stat().st_size,
+             chat_id=message.chat.id)
+    return path
+
+
+async def _save_document(message: Message) -> tuple[Path | None, str]:
+    """Download document, save. Returns (path, text_content_preview)."""
+    if not message.bot or not message.document:
+        return None, ""
+    doc  = message.document
+    file = await message.bot.get_file(doc.file_id)
+    if not file.file_path:
+        await message.reply("Failed to get document.")
+        return None, ""
+    buf = await message.bot.download_file(file.file_path)
+    if not buf:
+        await message.reply("Failed to download document.")
+        return None, ""
+
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    orig_name = doc.file_name or f"doc_{message.message_id}"
+    filename  = f"{message.chat.id}_{orig_name}"
+    path      = _UPLOAD_DIR / filename
+    path.write_bytes(buf.read())
+    log.info("file.saved_document", path=str(path), filename=orig_name,
+             size=path.stat().st_size, chat_id=message.chat.id)
+
+    # Read text content for text-based files
+    content = ""
+    if path.suffix.lower() in _TEXT_EXTS:
+        try:
+            content = path.read_text(errors="replace")[:4000]
+        except Exception:
+            pass
+    return path, content
 
 
 # ── Streaming dispatch helper ────────────────────────────────────
