@@ -157,14 +157,14 @@ setup_claude_cli() {
         local login_choice
         login_choice="$(ask "Login now? [Y/n]" "y")"
         if [[ "$login_choice" =~ ^[Yy]?$ ]]; then
-            claude login
+            claude auth login
             if [[ $? -eq 0 ]]; then
                 success "Claude Code authenticated"
             else
-                warn "Login failed or cancelled. Run 'claude login' later."
+                warn "Login failed or cancelled. Run 'claude auth login' later."
             fi
         else
-            warn "Skipped — run 'claude login' before using extraction."
+            warn "Skipped — run 'claude auth login' before using extraction."
         fi
     fi
 }
