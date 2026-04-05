@@ -56,11 +56,13 @@ class DeepgramSTT:
         import httpx
 
         params: dict[str, str] = {
-            "model":        "nova-3",
-            "punctuate":    "true",
-            "smart_format": "true",
+            "model":          "nova-3",
+            "punctuate":      "true",
+            "smart_format":   "true",
+            "detect_language": "true",
         }
         if self._language != "auto":
+            params.pop("detect_language", None)
             params["language"] = self._language
 
         headers = {
@@ -76,10 +78,14 @@ class DeepgramSTT:
             )
             resp.raise_for_status()
             data = resp.json()
-            return (
+            transcript = (
                 data["results"]["channels"][0]["alternatives"][0]["transcript"]
                 .strip()
             )
+            log.debug("deepgram.result", transcript=transcript[:100],
+                       audio_bytes=len(audio),
+                       confidence=data["results"]["channels"][0]["alternatives"][0].get("confidence"))
+            return transcript
 
 
 def create_stt(provider: str, **kwargs: str) -> STTProvider | None:
