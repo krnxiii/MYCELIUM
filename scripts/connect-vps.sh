@@ -211,8 +211,12 @@ test_connectivity() {
     # Test VPS reachability
     spin_start "Reaching $VPS_HOST..."
 
-    if ! tailscale ping "$VPS_HOST" --timeout=5s &>/dev/null 2>&1; then
-        if ! curl -sf --connect-timeout 5 "http://$VPS_HOST:9631/mcp" -o /dev/null 2>/dev/null; then
+    # tailscale ping (no --timeout flag — not portable across versions)
+    if ! tailscale ping "$VPS_HOST" -c 1 &>/dev/null 2>&1; then
+        # Fallback: curl (any HTTP response = reachable, even 401)
+        local code
+        code="$(curl -s --connect-timeout 5 -o /dev/null -w '%{http_code}' "http://$VPS_HOST:9631/mcp" 2>/dev/null || echo "000")"
+        if [[ "$code" == "000" ]]; then
             spin_stop false "Cannot reach $VPS_HOST"
             hint "Check that VPS is online and Tailscale is connected on both sides"
             local proceed
