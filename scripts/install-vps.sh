@@ -354,28 +354,18 @@ show_summary() {
     fi
 
     echo
-    printf "  ${BOLD}On your laptop:${NC}\n"
+    printf "  ${BOLD}On your laptop — run the connect script:${NC}\n"
     echo
-    printf "  ${DIM}# 1. Install Tailscale (if not yet)${NC}\n"
-    printf "  brew install tailscale  ${DIM}# or https://tailscale.com/download${NC}\n"
+    printf "  ${CYAN}bash scripts/connect-vps.sh${NC}\n"
     echo
-    printf "  ${DIM}# 2. Find your VPS Tailscale IP${NC}\n"
-    printf "  tailscale status\n"
-    echo
-    printf "  ${DIM}# 3. Register remote MCP in Claude Code${NC}\n"
-    printf "  claude mcp remove mycelium -s user 2>/dev/null\n"
-    printf "  claude mcp add -t http -s user \\\\\n"
-    printf "    --header \"Authorization: Bearer %s\" \\\\\n" "$token"
-    printf "    mycelium http://<tailscale-ip>:9631/mcp\n"
-    echo
-    printf "  ${DIM}# 4. Vault sync (Syncthing)${NC}\n"
-    printf "  brew install --cask syncthing\n"
+    printf "  ${DIM}It will ask for:${NC}\n"
+    printf "  ${DIM}  - VPS hostname/IP (Tailscale)${NC}\n"
+    printf "  ${DIM}  - MCP token: %s${NC}\n" "$token"
     if [[ -n "$st_id" ]]; then
-        printf "  ${DIM}# Add remote device with ID shown above${NC}\n"
-        printf "  ${DIM}# Share folder: ~/.mycelium/vault${NC}\n"
-    else
-        printf "  ${DIM}# Open http://<tailscale-ip>:8384 and pair devices${NC}\n"
+        printf "  ${DIM}  - Syncthing ID: %s${NC}\n" "$st_id"
     fi
+    echo
+    printf "  ${DIM}The script handles: MCP registration, skills, vault sync — everything.${NC}\n"
     echo
 }
 
