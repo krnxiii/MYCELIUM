@@ -244,27 +244,23 @@ register_mcp() {
         mycelium "http://$VPS_HOST:9631/mcp" \
         --header "Authorization: Bearer $MCP_TOKEN" >/dev/null 2>&1
 
-    # Override project-level .mcp.json if repo is cloned
+    # Remove project-level .mcp.json override (user-level takes precedence)
     local root
     root="$(detect_project_root 2>/dev/null || true)"
     if [[ -n "$root" ]] && [[ -f "$root/.mcp.json" ]]; then
-        cat > "$root/.mcp.json" <<MCPJSON
-{
-  "mcpServers": {
-    "mycelium": {
-      "type": "http",
-      "url": "http://$VPS_HOST:9631/mcp",
-      "headers": {
-        "Authorization": "Bearer $MCP_TOKEN"
-      }
-    }
-  }
-}
-MCPJSON
-        success "MCP registered (project + user)"
-    else
-        success "MCP registered (HTTP → $VPS_HOST:9631)"
+        # Remove mycelium from project config so user-level HTTP registration wins
+        python3 -c "
+import json, pathlib, sys
+p = pathlib.Path('$root/.mcp.json')
+cfg = json.loads(p.read_text())
+if 'mycelium' in cfg.get('mcpServers', {}):
+    del cfg['mcpServers']['mycelium']
+    p.write_text(json.dumps(cfg, indent=2) + '\n')
+    print('removed', file=sys.stderr)
+" 2>/dev/null || true
     fi
+
+    success "MCP registered (HTTP → $VPS_HOST:9631)"
 
     # Gate init
     mkdir -p ~/.mycelium
