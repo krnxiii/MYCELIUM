@@ -47,6 +47,7 @@ services:
       MYCELIUM_OWNER__NAME: ${MYCELIUM_OWNER__NAME:-}
       MYCELIUM_RENDER__ENABLED: ${MYCELIUM_RENDER__ENABLED:-false}
       MYCELIUM_OBSIDIAN__ENABLED: ${MYCELIUM_OBSIDIAN__ENABLED:-true}
+      MYCELIUM_OBSIDIAN__PROJECT_NEURONS: ${MYCELIUM_OBSIDIAN__PROJECT_NEURONS:-true}
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
       - tg_uploads:/tmp/tg-uploads

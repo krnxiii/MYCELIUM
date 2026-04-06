@@ -156,7 +156,7 @@ class TelegramSettings(BaseModel):
 
 class ObsidianSettings(BaseModel):
     enabled:              bool  = True
-    project_neurons:      bool  = False    # project neurons as .md files in vault/neurons/
+    project_neurons:      bool  = True     # project neurons as .md files in vault/neurons/
     min_shared_neurons:   int   = 1
     max_related:          int   = 20
     include_expired:      bool  = False
