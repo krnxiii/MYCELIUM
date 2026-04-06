@@ -61,6 +61,59 @@ spin() {
     wait "$pid" || return $?  # propagate exit code without set -e killing us
 }
 
+spin_log() {
+    # Spinner that shows live progress from a log file.
+    # Usage: spin_log <pid> <logfile> <label>
+    # Parses docker build steps [N/M] and shows elapsed time.
+    local pid=$1 logfile="$2" label="${3:-}"
+    local i=0 start cols phase line last_step=""
+    start=$SECONDS
+    cols=$(tput cols 2>/dev/null || echo 80)
+
+    while kill -0 "$pid" 2>/dev/null; do
+        local elapsed=$(( SECONDS - start ))
+        local mins=$(( elapsed / 60 ))
+        local secs=$(( elapsed % 60 ))
+        local time_str
+        if (( mins > 0 )); then
+            time_str="${mins}m ${secs}s"
+        else
+            time_str="${secs}s"
+        fi
+
+        # Parse last docker build step from logfile
+        phase="$label"
+        line="$(grep -oE '\[([0-9]+/[0-9]+)\] [A-Z]+' "$logfile" 2>/dev/null | tail -1 || true)"
+        if [[ -n "$line" ]]; then
+            local step_num="${line%%]*}"
+            step_num="${step_num#[}"  # "3/9"
+            local cmd="${line#*] }"   # "RUN", "COPY", etc.
+            case "$cmd" in
+                RUN)  phase="Building [$step_num]" ;;
+                COPY) phase="Copying  [$step_num]" ;;
+                *)    phase="Building [$step_num]" ;;
+            esac
+        elif grep -q 'Creating\|Starting\|Recreating' "$logfile" 2>/dev/null; then
+            local svc
+            svc="$(grep -oE '(Creating|Starting|Recreating) [a-z_-]+' "$logfile" | tail -1 || true)"
+            [[ -n "$svc" ]] && phase="$svc"
+        fi
+
+        # Truncate to terminal width: "  ⠋ phase... (Xs)"
+        local avail=$(( cols - 12 - ${#time_str} ))
+        if (( ${#phase} > avail )); then
+            phase="${phase:0:$((avail-1))}…"
+        fi
+
+        printf "\r  ${DIM}%s${NC} %-${avail}s ${DIM}(%s)${NC}" \
+            "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$phase" "$time_str" >&2
+        sleep 0.15
+        ((i++)) || true
+    done
+    printf "\r\033[K" >&2
+    wait "$pid" || return $?
+}
+
 set_env_val() {
     local key="$1" val="$2" file="${3:-$ENV_FILE}"
     local tmp="${file}.tmp"
@@ -342,9 +395,18 @@ deploy() {
     fi
     success "Images pulled"
 
-    $compose_cmd up -d --build >>"$logfile" 2>&1 &
-    if ! spin $! "Building & starting MYCELIUM..."; then
-        error "docker compose up failed:"; tail -10 "$logfile" >&2; rm -f "$logfile"; exit 1
+    # Build with --progress=plain so we can parse [N/M] steps
+    BUILDKIT_PROGRESS=plain $compose_cmd build >>"$logfile" 2>&1 &
+    if ! spin_log $! "$logfile" "Building images..."; then
+        error "docker compose build failed:"
+        tail -20 "$logfile" >&2; rm -f "$logfile"; exit 1
+    fi
+    success "Images built"
+
+    $compose_cmd up -d >>"$logfile" 2>&1 &
+    if ! spin_log $! "$logfile" "Starting containers..."; then
+        error "docker compose up failed:"
+        tail -10 "$logfile" >&2; rm -f "$logfile"; exit 1
     fi
     success "Containers started"
 
