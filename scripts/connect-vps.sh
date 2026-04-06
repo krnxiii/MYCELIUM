@@ -3,9 +3,8 @@ set -euo pipefail
 trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 
 # ── Colors & Constants ──────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'
-DIM='\033[2m'; NC='\033[0m'
+CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'; BGREEN='\033[1;32m'
+YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 VAULT_DIR="$HOME/.mycelium/vault"
 GITHUB_RAW="https://raw.githubusercontent.com/krnxiii/MYCELIUM/main"
@@ -14,67 +13,51 @@ GITHUB_RAW="https://raw.githubusercontent.com/krnxiii/MYCELIUM/main"
 success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
 warn()    { printf "  ${YELLOW}!${NC}  %s\n" "$1"; }
 error()   { printf "  ${RED}✗${NC}  %s\n" "$1" >&2; }
-hint()    { printf "     ${DIM}%s${NC}\n" "$1"; }
-sep()     { printf "\n  ${DIM}─────────────────────────────────────────────${NC}\n"; }
+hint()    { printf "    ${DIM}%s${NC}\n" "$1" >&2; }
 
 step() {
-    printf "\n  ${BOLD}${CYAN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
-    printf "  ${DIM}─────────────────────────────────────────────${NC}\n"
+    printf "\n${BOLD}${BCYAN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
+}
+
+sep() {
+    printf "${DIM}  ─────────────────────────────────────────────${NC}\n"
 }
 
 ask() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "  ${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "  ${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -r answer
-    echo "${answer:-$default}"
+    printf '%s' "${answer:-$default}"
 }
 
 ask_secret() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "  ${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "  ${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -rs answer
-    echo >&2
-    echo "${answer:-$default}"
+    printf '\n' >&2
+    printf '%s' "${answer:-$default}"
 }
 
-# ── Braille Spinner ─────────────────────────────────────────────────
-_spinner_pid=""
+BRAILLE=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
-spin_start() {
-    local msg="${1:-Working...}"
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    (
-        while true; do
-            for f in "${frames[@]}"; do
-                printf "\r  ${CYAN}%s${NC}  ${DIM}%s${NC}" "$f" "$msg" >&2
-                sleep 0.08
-            done
-        done
-    ) &
-    _spinner_pid=$!
-}
-
-spin_stop() {
-    local ok="${1:-true}" msg="${2:-}"
-    if [[ -n "$_spinner_pid" ]]; then
-        kill "$_spinner_pid" 2>/dev/null
-        wait "$_spinner_pid" 2>/dev/null || true
-        _spinner_pid=""
-    fi
+spin() {
+    local pid=$1 label="${2:-}"
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${DIM}%s${NC} %s" "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$label" >&2
+        sleep 0.1
+        ((i++)) || true
+    done
     printf "\r\033[K" >&2
-    if [[ "$ok" == "true" ]] && [[ -n "$msg" ]]; then
-        success "$msg"
-    elif [[ "$ok" == "false" ]] && [[ -n "$msg" ]]; then
-        warn "$msg"
-    fi
+    wait "$pid" || return $?
 }
 
 detect_os() {
@@ -209,15 +192,16 @@ test_connectivity() {
     fi
 
     # Test VPS reachability
-    spin_start "Reaching $VPS_HOST..."
-
-    # tailscale ping (no --timeout flag — not portable across versions)
-    if ! tailscale ping "$VPS_HOST" -c 1 &>/dev/null 2>&1; then
+    if tailscale ping "$VPS_HOST" -c 1 &>/dev/null 2>&1; then
+        success "VPS reachable"
+    else
         # Fallback: curl (any HTTP response = reachable, even 401)
         local code
         code="$(curl -s --connect-timeout 5 -o /dev/null -w '%{http_code}' "http://$VPS_HOST:9631/mcp" 2>/dev/null || echo "000")"
-        if [[ "$code" == "000" ]]; then
-            spin_stop false "Cannot reach $VPS_HOST"
+        if [[ "$code" != "000" ]]; then
+            success "VPS reachable"
+        else
+            warn "Cannot reach $VPS_HOST"
             hint "Check that VPS is online and Tailscale is connected on both sides"
             local proceed
             proceed="$(ask "Continue anyway? [y/N]" "n")"
@@ -226,20 +210,17 @@ test_connectivity() {
         fi
     fi
 
-    spin_stop true "VPS reachable"
-
-    # Test MCP endpoint (no -f flag: we check http_code ourselves)
-    spin_start "Checking MCP server..."
+    # Test MCP endpoint
     local http_code
     http_code="$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 \
         -H "Authorization: Bearer $MCP_TOKEN" \
         "http://$VPS_HOST:9631/mcp" 2>/dev/null)" || http_code="000"
 
     case "$http_code" in
-        200|406) spin_stop true  "MCP server reachable" ;;
-        401|403) spin_stop false; error "MCP auth failed -- check token"; exit 1 ;;
-        000)     spin_stop false "MCP not responding -- VPS may still be starting" ;;
-        *)       spin_stop false "MCP returned HTTP $http_code" ;;
+        200|406) success "MCP server reachable" ;;
+        401|403) error "MCP auth failed -- check token"; exit 1 ;;
+        000)     warn "MCP not responding -- VPS may still be starting" ;;
+        *)       warn "MCP returned HTTP $http_code" ;;
     esac
 }
 
@@ -261,9 +242,9 @@ register_mcp() {
     # Register (name + url BEFORE --header, which is variadic)
     claude mcp add -t http -s user \
         mycelium "http://$VPS_HOST:9631/mcp" \
-        --header "Authorization: Bearer $MCP_TOKEN"
+        --header "Authorization: Bearer $MCP_TOKEN" >/dev/null 2>&1
 
-    success "MCP server registered in Claude Code"
+    success "MCP registered (HTTP → $VPS_HOST:9631)"
 
     # Gate init
     mkdir -p ~/.mycelium
@@ -280,7 +261,7 @@ install_skills() {
     local root
     root="$(detect_project_root 2>/dev/null || echo "")"
 
-    spin_start "Installing ${#skills[@]} skills..."
+    # Install skills
 
     for skill in "${skills[@]}"; do
         mkdir -p ~/.claude/skills/"$skill"
@@ -289,11 +270,11 @@ install_skills() {
         else
             curl -fsSL "$GITHUB_RAW/.claude/skills/$skill/SKILL.md" \
                 -o ~/.claude/skills/"$skill"/SKILL.md 2>/dev/null \
-                || { spin_stop false "Failed to download skill: $skill"; return; }
+                || { warn "Failed to download skill: $skill"; return; }
         fi
     done
 
-    spin_stop true "Skills installed (${#skills[@]})"
+    success "Skills installed (${#skills[@]})"
 
     # Access rules
     local marker="## MYCELIUM MCP Access Control"
@@ -326,28 +307,27 @@ setup_syncthing() {
 
     # Install Syncthing
     if ! command -v syncthing &>/dev/null; then
-        spin_start "Installing Syncthing..."
         case "$os" in
             macos)
                 if command -v brew &>/dev/null; then
-                    brew install syncthing >/dev/null 2>&1
+                    brew install syncthing >/dev/null 2>&1 &
+                    spin $! "Installing Syncthing..."
                 else
-                    spin_stop false
                     error "brew not found -- install Syncthing manually: https://syncthing.net"
                     return
                 fi
                 ;;
             linux)
                 if command -v apt-get &>/dev/null; then
-                    sudo apt-get install -y syncthing >/dev/null 2>&1
+                    sudo apt-get install -y syncthing >/dev/null 2>&1 &
+                    spin $! "Installing Syncthing..."
                 else
-                    spin_stop false
                     error "Install Syncthing manually: https://syncthing.net"
                     return
                 fi
                 ;;
         esac
-        spin_stop true "Syncthing installed"
+        success "Syncthing installed"
     else
         success "Syncthing found"
     fi
@@ -356,10 +336,9 @@ setup_syncthing() {
     case "$os" in
         macos)
             if ! brew services list 2>/dev/null | grep syncthing | grep -q started; then
-                brew services start syncthing 2>/dev/null || true
-                spin_start "Waiting for Syncthing to start..."
+                brew services start syncthing >/dev/null 2>&1 || true
                 sleep 3
-                spin_stop true "Syncthing started"
+                success "Syncthing started"
             fi
             ;;
         linux)
@@ -402,7 +381,7 @@ setup_syncthing() {
     local auth_header="X-API-Key: $api_key"
 
     # Add VPS device
-    spin_start "Adding VPS device to Syncthing..."
+    # Add VPS device
     local device_config
     device_config=$(cat <<DEVICE_JSON
 {
@@ -418,7 +397,7 @@ DEVICE_JSON
     local config
     config="$(curl -sf -H "$auth_header" "$st_api/config" 2>/dev/null || echo "")"
     if [[ -z "$config" ]]; then
-        spin_stop false "Cannot reach Syncthing API"
+        warn "Cannot reach Syncthing API"
         _show_manual_syncthing_instructions
         return
     fi
@@ -430,7 +409,7 @@ cfg = json.load(sys.stdin)
 ids = [d['deviceID'] for d in cfg.get('devices',[])]
 sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
 " 2>/dev/null; then
-        spin_stop true "VPS device already added"
+        success "VPS device already added"
     else
         # Add device via config patch
         echo "$config" | python3 -c "
@@ -447,12 +426,12 @@ json.dump(cfg, sys.stdout)
 " 2>/dev/null | curl -sf -X PUT -H "$auth_header" \
             -H "Content-Type: application/json" \
             -d @- "$st_api/config" >/dev/null 2>&1 \
-        && spin_stop true "VPS device added" \
-        || { spin_stop false "Failed to add device via API"; _show_manual_syncthing_instructions; return; }
+        && success "VPS device added" \
+        || { warn "Failed to add device via API"; _show_manual_syncthing_instructions; return; }
     fi
 
     # Add vault folder
-    spin_start "Configuring vault folder..."
+    # Configure vault folder
 
     # Re-read config (may have changed)
     config="$(curl -sf -H "$auth_header" "$st_api/config" 2>/dev/null)"
@@ -463,7 +442,7 @@ cfg = json.load(sys.stdin)
 ids = [f['id'] for f in cfg.get('folders',[])]
 sys.exit(0 if 'mycelium-vault' in ids else 1)
 " 2>/dev/null; then
-        spin_stop true "Vault folder already configured"
+        success "Vault folder already configured"
     else
         # Get local device ID
         local local_id
@@ -489,8 +468,8 @@ json.dump(cfg, sys.stdout)
 " 2>/dev/null | curl -sf -X PUT -H "$auth_header" \
             -H "Content-Type: application/json" \
             -d @- "$st_api/config" >/dev/null 2>&1 \
-        && spin_stop true "Vault folder configured: $VAULT_DIR" \
-        || { spin_stop false "Failed to add folder via API"; _show_manual_syncthing_instructions; return; }
+        && success "Vault folder configured: $VAULT_DIR" \
+        || { warn "Failed to add folder via API"; _show_manual_syncthing_instructions; return; }
     fi
 
     printf "\n"
@@ -511,36 +490,41 @@ _show_manual_syncthing_instructions() {
 
 # ── Summary ─────────────────────────────────────────────────────────
 show_summary() {
-    local w=51
+    # Dynamic width box (same as install-vps.sh)
+    local svc1="MCP         http://$VPS_HOST:9631/mcp"
+    local svc2="Neo4j       http://$VPS_HOST:7474"
+    local svc3="Syncthing   http://$VPS_HOST:8384"
+    local svc4="Vault       $VAULT_DIR"
+    local W=40
+    for s in "$svc1" "$svc2" "$svc3" "$svc4"; do
+        (( ${#s} > W )) && W=${#s}
+    done
 
-    printf "\n"
-    printf "  ${CYAN}%s${NC}\n" "$(printf '%.0s─' $(seq 1 $w))"
-    printf "  ${CYAN}│${NC}  ${BOLD}${GREEN}Connected to MYCELIUM VPS${NC}%-$((w - 29))s${CYAN}│${NC}\n" ""
-    printf "  ${CYAN}%s${NC}\n" "$(printf '%.0s─' $(seq 1 $w))"
+    _row() { printf "  ${DIM}│${NC} %-${W}s ${DIM}│${NC}\n" "$1"; }
+    _rul() { printf "  ${DIM}%s%s%s${NC}\n" "$1" "$(printf '─%.0s' $(seq 1 $((W+2))))" "$2"; }
 
-    printf "\n"
-    printf "  ${BOLD}${CYAN}Services${NC}\n"
-    printf "  ${DIM}├─${NC} MCP Server     ${DIM}http://%s:9631/mcp${NC}\n" "$VPS_HOST"
-    printf "  ${DIM}├─${NC} Neo4j Browser  ${DIM}http://%s:7474${NC}\n" "$VPS_HOST"
-    printf "  ${DIM}├─${NC} Syncthing UI   ${DIM}http://%s:8384${NC}\n" "$VPS_HOST"
-    printf "  ${DIM}└─${NC} Vault (local)  ${DIM}%s${NC}\n" "$VAULT_DIR"
+    printf '\n'
+    _rul "┌" "┐"
+    _row "Connected to MYCELIUM VPS"
+    _rul "├" "┤"
+    _row "$svc1"
+    _row "$svc2"
+    _row "$svc3"
+    _row "$svc4"
+    _rul "└" "┘"
 
-    printf "\n"
-    printf "  ${BOLD}${CYAN}Quick start${NC}\n"
+    printf '\n'
+    printf "  ${BCYAN}Quick start${NC}\n"
     printf "  ${DIM}├─${NC} claude              ${DIM}MYCELIUM tools available${NC}\n"
     printf "  ${DIM}├─${NC} /mycelium-on        ${DIM}enable write access${NC}\n"
     printf "  ${DIM}└─${NC} /mycelium-recall X  ${DIM}search knowledge graph${NC}\n"
-
-    printf "\n"
-    printf "  ${CYAN}%s${NC}\n" "$(printf '%.0s─' $(seq 1 $w))"
-    printf "\n"
+    printf '\n'
 }
 
 # ── Main ────────────────────────────────────────────────────────────
 main() {
-    printf "\n"
-    printf "  ${BOLD}${CYAN}MYCELIUM${NC} ${DIM}/${NC} connect to VPS\n"
-    printf "  ${DIM}Set up laptop to use remote Data Node${NC}\n"
+    printf '\n'
+    printf "  ${BCYAN}MYCELIUM${NC}  ${DIM}connect to VPS${NC}\n"
 
     step "1/5" "Checking dependencies"
     check_deps
