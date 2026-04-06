@@ -43,11 +43,23 @@ detect_project_root() {
 
 # ── Step 1: Stop services ──────────────────────────────────────────
 stop_services() {
-    step "1/5" "Stopping services"
+    step "1/6" "Stopping services"
 
     local root="$1"
-    if command -v docker &>/dev/null && docker compose -f "$root/docker-compose.yml" ps -q 2>/dev/null | grep -q .; then
-        docker compose -f "$root/docker-compose.yml" down 2>/dev/null || true
+    local stopped=false
+    if command -v docker &>/dev/null; then
+        # VPS compose
+        if docker compose -f "$root/docker-compose.vps.yml" ps -q 2>/dev/null | grep -q .; then
+            docker compose -f "$root/docker-compose.vps.yml" --profile telegram --profile voice-whisper down 2>/dev/null || true
+            stopped=true
+        fi
+        # Local compose
+        if docker compose -f "$root/docker-compose.yml" ps -q 2>/dev/null | grep -q .; then
+            docker compose -f "$root/docker-compose.yml" --profile app --profile full down 2>/dev/null || true
+            stopped=true
+        fi
+    fi
+    if $stopped; then
         success "Containers stopped"
     else
         info "No running containers found"
@@ -124,15 +136,50 @@ remove_data() {
         return 0
     fi
 
-    local answer
-    answer="$(ask "Delete $MYCELIUM_DIR (graph data, vault, logs, gate flags)?" "n")"
-    case "$answer" in
-        [yY]*)
-            rm -rf "$MYCELIUM_DIR"
-            success "Data removed ($MYCELIUM_DIR)" ;;
-        *)
-            warn "Kept $MYCELIUM_DIR" ;;
-    esac
+    info "Contents of $MYCELIUM_DIR:"
+    [[ -d "$MYCELIUM_DIR/neo4j" ]]     && info "  neo4j/     — graph database"
+    [[ -d "$MYCELIUM_DIR/vault" ]]      && info "  vault/     — knowledge files (Obsidian)"
+    [[ -d "$MYCELIUM_DIR/syncthing" ]]  && info "  syncthing/ — sync config"
+    echo
+
+    # Graph data (neo4j)
+    if [[ -d "$MYCELIUM_DIR/neo4j" ]]; then
+        local answer
+        answer="$(ask "Delete graph database (neo4j/)?" "n")"
+        case "$answer" in
+            [yY]*) rm -rf "$MYCELIUM_DIR/neo4j"; success "Graph database removed" ;;
+            *)     warn "Kept graph database" ;;
+        esac
+    fi
+
+    # Vault
+    if [[ -d "$MYCELIUM_DIR/vault" ]]; then
+        local answer
+        answer="$(ask "Delete vault (knowledge files, Obsidian notes)?" "n")"
+        case "$answer" in
+            [yY]*) rm -rf "$MYCELIUM_DIR/vault"; success "Vault removed" ;;
+            *)     warn "Kept vault" ;;
+        esac
+    fi
+
+    # Everything else (syncthing config, gate flags, logs)
+    local remaining
+    remaining="$(ls -A "$MYCELIUM_DIR" 2>/dev/null | grep -v '^neo4j$' | grep -v '^vault$' || true)"
+    if [[ -n "$remaining" ]]; then
+        local answer
+        answer="$(ask "Delete remaining files (syncthing config, logs, flags)?" "y")"
+        case "$answer" in
+            [yY]*)
+                for item in $remaining; do
+                    rm -rf "${MYCELIUM_DIR:?}/$item"
+                done
+                success "Remaining files removed" ;;
+            *)  warn "Kept remaining files" ;;
+        esac
+    fi
+
+    # Remove dir if empty
+    rmdir "$MYCELIUM_DIR" 2>/dev/null && success "Removed empty $MYCELIUM_DIR" || true
 }
 
 # ── Step 5: Clean project ──────────────────────────────────────────
