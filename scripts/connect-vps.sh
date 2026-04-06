@@ -133,16 +133,16 @@ collect_vps_info() {
     fi
 
     printf "\n"
-    MCP_TOKEN="$(ask_secret "MCP auth token")"
-    hint "From the VPS installer output"
+    MCP_TOKEN="$(ask_secret "Token")"
+    hint "'Token' from the VPS installer summary"
     if [[ -z "$MCP_TOKEN" ]]; then
-        error "MCP token is required"
+        error "Token is required"
         exit 1
     fi
 
     printf "\n"
-    SYNCTHING_DEVICE_ID="$(ask "VPS Syncthing Device ID (empty to skip vault sync)" "")"
-    hint "Long alphanumeric string from VPS installer output"
+    SYNCTHING_DEVICE_ID="$(ask "Sync ID (empty to skip vault sync)" "")"
+    hint "'Sync ID' from the VPS installer summary"
 }
 
 # ── Step 3: Ensure Tailscale + Test Connectivity ─────────────────────
