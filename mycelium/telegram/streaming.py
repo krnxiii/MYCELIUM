@@ -16,6 +16,7 @@ MAX_MESSAGE_LEN   = 4096
 MIN_INITIAL_CHARS = 30
 EDIT_THROTTLE_SEC = 1.0
 EMOJI_THINKING    = "\U0001f914"  # 🤔
+_BRAILLE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 class ProgressIndicator:
@@ -27,9 +28,11 @@ class ProgressIndicator:
         self._msg_id: int | None = None
         self._task: asyncio.Task | None = None
         self._start   = 0.0
+        self._tick_i  = 0
 
     async def start(self) -> None:
-        msg = await self._bot.send_message(self._chat_id, f"{EMOJI_THINKING} ...")
+        msg = await self._bot.send_message(
+            self._chat_id, f"{EMOJI_THINKING} thinking {_BRAILLE[0]}")
         self._msg_id = msg.message_id
         self._start  = time.monotonic()
         self._task   = asyncio.create_task(self._tick())
@@ -38,10 +41,12 @@ class ProgressIndicator:
         try:
             while True:
                 await asyncio.sleep(5)
+                self._tick_i += 1
                 elapsed = int(time.monotonic() - self._start)
+                spin = _BRAILLE[self._tick_i % len(_BRAILLE)]
                 try:
                     await self._bot.edit_message_text(
-                        f"{EMOJI_THINKING} Thinking... ({elapsed}s)",
+                        f"{EMOJI_THINKING} thinking {spin} [{elapsed}s]",
                         chat_id=self._chat_id,
                         message_id=self._msg_id,
                     )
