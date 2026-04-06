@@ -13,13 +13,14 @@ import structlog
 log = structlog.get_logger()
 
 # Tools the agent is allowed to use (broad: container limits blast radius)
-_ALLOWED_TOOLS = "mcp__mycelium__*,Read,Glob,Grep,Bash"
+_ALLOWED_TOOLS = "mcp__mycelium__*,Read,Glob,Grep,Bash,WebSearch,WebFetch,Write"
 
 _SYSTEM_PROMPT = (
     "You are MYCELIUM assistant — a personal knowledge graph interface. "
     "You have access to MCP tools (mcp__mycelium__*) that let you search, "
     "add, and manage the user's knowledge graph. "
-    "You also have Read, Glob, Grep, Bash tools for file/system operations. "
+    "You also have Read, Glob, Grep, Bash, Write tools for file/system operations. "
+    "You have WebSearch and WebFetch to search the internet and read web pages. "
     "ALWAYS use mcp__mycelium__search to answer questions about what the user knows. "
     "Use mcp__mycelium__add_signal to capture new information. "
     "For files/photos: use Read to view the content, vault_store to save in vault, "
@@ -44,19 +45,18 @@ class AgentChunk:
     usage:      dict = field(default_factory=dict)
 
 
-_SESSION_TTL = 14400  # 4 hours
-
-
 class AgentProcess:
     """Manages claude -p subprocesses with per-chat sessions."""
 
     def __init__(
         self,
-        model:    str = "sonnet",
-        max_turns: int = 10,
+        model:       str = "sonnet",
+        max_turns:   int = 10,
+        session_ttl: int = 14400,
     ) -> None:
-        self._model      = model
-        self._max_turns  = max_turns
+        self._model       = model
+        self._max_turns   = max_turns
+        self._session_ttl = session_ttl
         self._sessions:  dict[str, str]   = {}  # chat_id → session_id
         self._session_ts: dict[str, float] = {}  # chat_id → last activity
         self._process:   asyncio.subprocess.Process | None = None
@@ -73,7 +73,7 @@ class AgentProcess:
     def _evict_stale(self) -> None:
         """Remove sessions older than TTL."""
         now     = monotonic()
-        expired = [k for k, ts in self._session_ts.items() if now - ts > _SESSION_TTL]
+        expired = [k for k, ts in self._session_ts.items() if now - ts > self._session_ttl]
         for k in expired:
             self._sessions.pop(k, None)
             self._session_ts.pop(k, None)

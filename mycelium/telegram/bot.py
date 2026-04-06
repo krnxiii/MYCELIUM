@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from pathlib import Path
 
@@ -43,6 +44,38 @@ _EMOJI_SPEECH = "\U0001f4ac"  # 💬
 _UPLOAD_DIR   = Path("/tmp/tg-uploads")
 _TEXT_EXTS    = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".log"})
 
+# ── Media/forward batching (debounce for albums & multi-forward) ──
+_BATCH_DELAY = 1.5  # seconds to wait for more items
+_batch_parts:  dict[int, list[str]] = {}                          # chat_id → text parts
+_batch_timers: dict[int, asyncio.TimerHandle] = {}                # chat_id → scheduled flush
+_batch_refs:   dict[int, tuple[Message, "Dispatcher"]] = {}       # chat_id → (last_msg, dispatcher)
+
+
+def _batch_add(chat_id: int, text: str, message: Message, dispatcher: "Dispatcher") -> None:
+    """Add text to batch buffer and reset debounce timer."""
+    _batch_parts.setdefault(chat_id, []).append(text)
+    _batch_refs[chat_id] = (message, dispatcher)
+    timer = _batch_timers.pop(chat_id, None)
+    if timer is not None:
+        timer.cancel()
+    loop = asyncio.get_event_loop()
+    _batch_timers[chat_id] = loop.call_later(
+        _BATCH_DELAY, lambda cid=chat_id: asyncio.create_task(_flush_batch(cid)),
+    )
+
+
+async def _flush_batch(chat_id: int) -> None:
+    """Flush batched items for a chat as one agent request."""
+    _batch_timers.pop(chat_id, None)
+    parts = _batch_parts.pop(chat_id, [])
+    ref   = _batch_refs.pop(chat_id, None)
+    if not ref or not parts:
+        return
+    message, dispatcher = ref
+    combined = "\n\n---\n\n".join(parts)
+    log.info("batch.flush", chat_id=chat_id, count=len(parts), total_len=len(combined))
+    await _stream_dispatch(message, dispatcher, combined)
+
 
 # ── Handlers ────────────────────────────────────────────────────────
 
@@ -69,7 +102,8 @@ async def cmd_commands(message: Message) -> None:
         "  /domains — list domains\n\n"
         "<b>Control:</b>\n"
         "  /abort — cancel current operation\n"
-        "  /update — pull latest code &amp; restart\n\n"
+        "  /update — pull latest code &amp; restart\n"
+        "  /level [level] — interaction verbosity (silent/minimal/balanced/curious)\n\n"
         "<i>Or just write naturally — AI agent handles everything.\n"
         "Photos, documents, voice messages, and forwards are supported.</i>",
         parse_mode=ParseMode.HTML,
@@ -197,30 +231,78 @@ async def cmd_update(message: Message) -> None:
         await message.answer(f"Update error: {html.escape(str(e))}")
 
 
+_INTERACTION_LEVELS = ("silent", "minimal", "balanced", "curious")
+
+
+@router.message(Command("level"))
+async def cmd_level(message: Message) -> None:
+    """View or change interaction level (question verbosity)."""
+    from mycelium.config import load_settings
+
+    parts = (message.text or "").split(maxsplit=1)
+    arg   = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    if not arg:
+        current = load_settings().interaction.level
+        await message.answer(
+            f"Interaction level: <b>{current}</b>\n"
+            f"Options: {', '.join(_INTERACTION_LEVELS)}\n"
+            f"Usage: /level &lt;level&gt;",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if arg not in _INTERACTION_LEVELS:
+        await message.answer(
+            f"Unknown level: {arg}\nOptions: {', '.join(_INTERACTION_LEVELS)}",
+        )
+        return
+
+    # Write to ~/.mycelium/.env (persistent across restarts)
+    env_file = Path.home() / ".mycelium" / ".env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    key = "MYCELIUM_INTERACTION__LEVEL"
+    lines: list[str] = []
+    found = False
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if line.startswith(f"{key}="):
+                lines.append(f"{key}={arg}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={arg}")
+    env_file.write_text("\n".join(lines) + "\n")
+
+    await message.answer(
+        f"Interaction level set to <b>{arg}</b>.\n"
+        f"Takes effect on next ingestion.",
+        parse_mode=ParseMode.HTML,
+    )
+    log.info("level.changed", level=arg)
+
+
 @router.message(F.forward_origin)
 async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
-    """Forwarded message -> extract source attribution -> route to agent."""
+    """Forwarded message -> batch with debounce -> route to agent as one request."""
+    chat_id = message.chat.id
     source  = _extract_forward_source(message)
     prefix  = f"[Forwarded from {source}]"
     caption = message.text or message.caption or ""
 
-    # Forwarded photo
     if message.photo:
         path = await _save_photo(message)
         if path:
             text = (
                 f"{prefix} Photo saved at {path}. "
-                "First, use Read tool to view the image and analyze its contents. "
-                "Then vault_store to save in vault, add_signal with extracted info, vault_link to connect."
+                "Use Read to view, vault_store to save, add_signal with info, vault_link."
             )
             if caption:
                 text += f" Caption: {caption}"
-            log.info("msg.forward_photo", source=source, chat_id=message.chat.id)
-            await _stream_dispatch(message, dispatcher, text)
-            return
-
-    # Forwarded document
-    if message.document:
+            _batch_add(chat_id, text, message, dispatcher)
+            log.info("msg.forward_photo", source=source, chat_id=chat_id)
+    elif message.document:
         path, content = await _save_document(message)
         if path:
             orig_name = message.document.file_name or path.name
@@ -232,20 +314,17 @@ async def handle_forward(message: Message, dispatcher: Dispatcher) -> None:
             else:
                 text = (
                     f"{prefix} Document: {orig_name} (saved at {path}). "
-                    "Use vault_store to save it. "
-                    "You CANNOT read binary files — do NOT attempt to read the file."
+                    "Use vault_store to save. Do NOT read binary files."
                 )
                 if caption:
                     text += f" Caption: {caption}"
-            log.info("msg.forward_document", source=source, chat_id=message.chat.id)
-            await _stream_dispatch(message, dispatcher, text)
-            return
-
-    # Forwarded text
-    if not caption:
+            _batch_add(chat_id, text, message, dispatcher)
+            log.info("msg.forward_document", source=source, chat_id=chat_id)
+    elif caption:
+        _batch_add(chat_id, f"{prefix}\n{caption}", message, dispatcher)
+        log.info("msg.forward_buffered", source=source, chat_id=chat_id)
+    else:
         return
-    log.info("msg.forward", source=source, text_len=len(caption), chat_id=message.chat.id)
-    await _stream_dispatch(message, dispatcher, f"{prefix}\n{caption}")
 
 
 @router.message(F.voice)
@@ -302,7 +381,7 @@ async def handle_voice(
 
 @router.message(F.photo)
 async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
-    """Photo → download → save → route to agent."""
+    """Photo → download → save → batch (albums) or dispatch single."""
     path = await _save_photo(message)
     if not path:
         return
@@ -310,17 +389,21 @@ async def handle_photo(message: Message, dispatcher: Dispatcher) -> None:
     caption = message.caption or ""
     text = (
         f"User sent a photo (saved at {path}). "
-        "First, use Read tool to view the image and analyze its contents. "
-        "Then vault_store to save in vault, add_signal with extracted info, vault_link to connect."
+        "Use Read to view, vault_store to save, add_signal with info, vault_link."
     )
     if caption:
         text += f" Caption: {caption}"
-    await _stream_dispatch(message, dispatcher, text)
+
+    if message.media_group_id:
+        _batch_add(message.chat.id, text, message, dispatcher)
+        log.info("msg.photo_batched", chat_id=message.chat.id, group=message.media_group_id)
+    else:
+        await _stream_dispatch(message, dispatcher, text)
 
 
 @router.message(F.document)
 async def handle_document(message: Message, dispatcher: Dispatcher) -> None:
-    """Document → download → save → route to agent."""
+    """Document → download → save → batch (albums) or dispatch single."""
     path, content = await _save_document(message)
     if not path:
         return
@@ -345,7 +428,12 @@ async def handle_document(message: Message, dispatcher: Dispatcher) -> None:
         )
         if caption:
             text += f" Also process the caption as a signal: {caption}"
-    await _stream_dispatch(message, dispatcher, text)
+
+    if message.media_group_id:
+        _batch_add(message.chat.id, text, message, dispatcher)
+        log.info("msg.doc_batched", chat_id=message.chat.id, group=message.media_group_id)
+    else:
+        await _stream_dispatch(message, dispatcher, text)
 
 
 @router.message()
@@ -353,8 +441,15 @@ async def free_text(message: Message, dispatcher: Dispatcher) -> None:
     """Catch-all: free text -> agent with streaming delivery."""
     if not message.text:
         return
-    log.info("msg.text", text_len=len(message.text), chat_id=message.chat.id)
-    await _stream_dispatch(message, dispatcher, message.text)
+    text = message.text
+    # Include replied-to message as context
+    reply = message.reply_to_message
+    if reply and (reply.text or reply.caption):
+        quoted = (reply.text or reply.caption or "")[:2000]
+        text = f"[Reply to: {quoted}]\n\n{text}"
+    log.info("msg.text", text_len=len(text), chat_id=message.chat.id,
+             has_reply=reply is not None)
+    await _stream_dispatch(message, dispatcher, text)
 
 
 # ── File download helpers ─────────────────────────────────────────
@@ -560,7 +655,7 @@ async def run_bot() -> None:
         raise SystemExit(1) from exc
 
     # Agent for full mode (claude -p subprocess)
-    agent = AgentProcess(model=cfg.llm.model)
+    agent = AgentProcess(model=cfg.llm.model, session_ttl=tg.session_ttl)
 
     dispatcher = Dispatcher(mcp_client, agent)
 
