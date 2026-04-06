@@ -3,22 +3,30 @@
 # Usage: make update   OR   bash scripts/update.sh
 set -euo pipefail
 
-COMPOSE_FILE="docker-compose.vps.yml"
-PROFILES=()
+GREEN=$'\033[32m'
+NC=$'\033[0m'
 
-# ── Detect active profiles ──────────────────────────────────────
+step() { printf "\n${GREEN}▸${NC} %s\n" "$1"; }
+
+# ── Detect environment ──────────────────────────────────────────
+if [ -f docker-compose.vps.yml ] && docker compose -f docker-compose.vps.yml ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium; then
+    COMPOSE_FILE="docker-compose.vps.yml"
+else
+    COMPOSE_FILE="docker-compose.yml"
+fi
+
+PROFILES=()
 if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q telegram; then
     PROFILES+=(--profile telegram)
 fi
 if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q whisper; then
     PROFILES+=(--profile voice-whisper)
 fi
+if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
+    PROFILES+=(--profile app)
+fi
 
-DIM=$'\033[2m'
-GREEN=$'\033[32m'
-NC=$'\033[0m'
-
-step() { printf "\n${GREEN}▸${NC} %s\n" "$1"; }
+printf "${GREEN}MYCELIUM${NC} update  ${GREEN}[${COMPOSE_FILE}]${NC}\n"
 
 # ── Pull ────────────────────────────────────────────────────────
 step "Pulling latest code"
