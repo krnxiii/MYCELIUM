@@ -73,6 +73,11 @@ class Dispatcher:
                 is_stream=not chunk.is_final,
             )
 
+    def is_busy(self) -> bool:
+        """Check if agent subprocess is currently running."""
+        p = self._agent._process
+        return p is not None and p.returncode is None
+
     def abort(self) -> bool:
         """Abort current agent process."""
         return self._agent.abort()
@@ -103,6 +108,14 @@ class Dispatcher:
                 case _:
                     yield ChannelReply(text=f"Unknown command: {cmd}")
             log.info("dispatch.fast_done", cmd=cmd, chat_id=msg.chat_id)
+        except RuntimeError as exc:
+            err = str(exc)
+            if "MCP unavailable" in err or "MCP unreachable" in err:
+                log.error("dispatcher.mcp_down", cmd=cmd, error=err)
+                yield ChannelReply(text="MCP server unavailable. Try again in a minute.")
+            else:
+                log.error("dispatcher.error", cmd=cmd, error=err)
+                yield ChannelReply(text=f"Error: {err}")
         except Exception as exc:
             log.error("dispatcher.error", cmd=cmd, error=str(exc))
             yield ChannelReply(text=f"Error: {exc}")

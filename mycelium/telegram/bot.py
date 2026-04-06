@@ -176,9 +176,8 @@ async def cmd_domains(message: Message, dispatcher: Dispatcher) -> None:
 
 
 @router.message(Command("update"))
-async def cmd_update(message: Message) -> None:
-    """Self-update: git pull + rebuild + restart containers."""
-    import asyncio as _aio
+async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
+    """Self-update: git pull + rebuild + restart. Waits for in-flight work."""
     import subprocess as _sp
 
     project_dir = Path("/project")
@@ -186,15 +185,23 @@ async def cmd_update(message: Message) -> None:
         await message.answer("Update unavailable (project dir not mounted).")
         return
 
+    # Wait for any in-flight agent work to finish
+    if dispatcher.is_busy():
+        await message.answer("Waiting for current operation to finish...")
+        for _ in range(120):  # max 2 minutes
+            await asyncio.sleep(1)
+            if not dispatcher.is_busy():
+                break
+        else:
+            await message.answer("Timeout waiting. Updating anyway.")
+
     await message.answer("Updating MYCELIUM...")
 
     def _run_update() -> str:
         lines: list[str] = []
-        # git requires safe.directory for mounted volumes
         _sp.run(["git", "config", "--global", "--add",
                  "safe.directory", "/project"],
                 capture_output=True, timeout=5)
-        # git pull
         r = _sp.run(
             ["git", "pull", "--ff-only", "origin", "dev"],
             cwd=project_dir, capture_output=True, text=True, timeout=60,
@@ -202,7 +209,6 @@ async def cmd_update(message: Message) -> None:
         lines.append(r.stdout.strip() or r.stderr.strip())
         if r.returncode != 0:
             return "git pull failed:\n" + "\n".join(lines)
-        # rebuild
         r = _sp.run(
             ["docker", "compose", "-f", "docker-compose.vps.yml",
              "--profile", "telegram", "build", "--quiet"],
@@ -212,7 +218,6 @@ async def cmd_update(message: Message) -> None:
             lines.append("Build failed: " + r.stderr[:300])
             return "\n".join(lines)
         lines.append("Build OK")
-        # restart (except telegram-bot — it restarts itself)
         r = _sp.run(
             ["docker", "compose", "-f", "docker-compose.vps.yml",
              "--profile", "telegram", "up", "-d"],
@@ -222,9 +227,8 @@ async def cmd_update(message: Message) -> None:
         return "\n".join(lines)
 
     try:
-        loop = _aio.get_event_loop()
+        loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, _run_update)
-        # Send result before this container might restart
         await message.answer(f"<pre>{html.escape(result[:3000])}</pre>",
                              parse_mode=ParseMode.HTML)
     except Exception as e:

@@ -69,11 +69,28 @@ class MCPClient:
         name: str,
         arguments: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Call MCP tool, return parsed JSON result (or raw text)."""
-        if not self._session:
-            raise RuntimeError("MCPClient not connected")
-        result: CallToolResult = await self._session.call_tool(name, arguments)
-        return _parse_result(result)
+        """Call MCP tool with auto-reconnect on failure."""
+        for attempt in range(1, 3):
+            if not self._session:
+                try:
+                    await self.connect(retries=3, backoff=1.0)
+                except Exception as exc:
+                    raise RuntimeError(f"MCP unavailable: {exc}") from exc
+            try:
+                result: CallToolResult = await self._session.call_tool(  # type: ignore[union-attr]
+                    name, arguments,
+                )
+                return _parse_result(result)
+            except Exception as exc:
+                log.warning("mcp_client.call_failed", tool=name,
+                            attempt=attempt, error=str(exc))
+                # Connection broken — reset and retry once
+                await self.close()
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"MCP tool '{name}' failed after reconnect: {exc}"
+                    ) from exc
+        raise RuntimeError("MCP unreachable")  # unreachable, satisfies type checker
 
     @property
     def connected(self) -> bool:
