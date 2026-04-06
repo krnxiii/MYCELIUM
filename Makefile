@@ -46,6 +46,9 @@ vps-up:
 vps-down:
 	docker compose -f docker-compose.vps.yml down
 
+update:
+	@bash scripts/update.sh
+
 vps-telegram:
 	docker compose -f docker-compose.vps.yml --profile telegram up -d --build mycelium-telegram
 

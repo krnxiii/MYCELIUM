@@ -68,7 +68,8 @@ async def cmd_commands(message: Message) -> None:
         "  /neurons [type] — list neurons\n"
         "  /domains — list domains\n\n"
         "<b>Control:</b>\n"
-        "  /abort — cancel current operation\n\n"
+        "  /abort — cancel current operation\n"
+        "  /update — pull latest code &amp; restart\n\n"
         "<i>Or just write naturally — AI agent handles everything.\n"
         "Photos, documents, voice messages, and forwards are supported.</i>",
         parse_mode=ParseMode.HTML,
@@ -138,6 +139,62 @@ async def cmd_domains(message: Message, dispatcher: Dispatcher) -> None:
         channel_msg = ChannelMessage(text="/domains", chat_id=str(message.chat.id))
         async for reply in dispatcher.dispatch(channel_msg):
             await _send_reply(message, reply)
+
+
+@router.message(Command("update"))
+async def cmd_update(message: Message) -> None:
+    """Self-update: git pull + rebuild + restart containers."""
+    import asyncio as _aio
+    import subprocess as _sp
+
+    project_dir = Path("/project")
+    if not (project_dir / "docker-compose.vps.yml").exists():
+        await message.answer("Update unavailable (project dir not mounted).")
+        return
+
+    await message.answer("Updating MYCELIUM...")
+
+    def _run_update() -> str:
+        lines: list[str] = []
+        # git requires safe.directory for mounted volumes
+        _sp.run(["git", "config", "--global", "--add",
+                 "safe.directory", "/project"],
+                capture_output=True, timeout=5)
+        # git pull
+        r = _sp.run(
+            ["git", "pull", "--ff-only", "origin", "dev"],
+            cwd=project_dir, capture_output=True, text=True, timeout=60,
+        )
+        lines.append(r.stdout.strip() or r.stderr.strip())
+        if r.returncode != 0:
+            return "git pull failed:\n" + "\n".join(lines)
+        # rebuild
+        r = _sp.run(
+            ["docker", "compose", "-f", "docker-compose.vps.yml",
+             "--profile", "telegram", "build", "--quiet"],
+            cwd=project_dir, capture_output=True, text=True, timeout=600,
+        )
+        if r.returncode != 0:
+            lines.append("Build failed: " + r.stderr[:300])
+            return "\n".join(lines)
+        lines.append("Build OK")
+        # restart (except telegram-bot — it restarts itself)
+        r = _sp.run(
+            ["docker", "compose", "-f", "docker-compose.vps.yml",
+             "--profile", "telegram", "up", "-d"],
+            cwd=project_dir, capture_output=True, text=True, timeout=120,
+        )
+        lines.append(r.stdout.strip() or r.stderr.strip())
+        return "\n".join(lines)
+
+    try:
+        loop = _aio.get_event_loop()
+        result = await loop.run_in_executor(None, _run_update)
+        # Send result before this container might restart
+        await message.answer(f"<pre>{html.escape(result[:3000])}</pre>",
+                             parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await message.answer(f"Update error: {html.escape(str(e))}")
 
 
 @router.message(F.forward_origin)
