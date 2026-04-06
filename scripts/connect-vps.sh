@@ -236,15 +236,35 @@ register_mcp() {
         return
     fi
 
-    # Remove stale registration
+    # Remove stale user-level registration
     claude mcp remove mycelium -s user 2>/dev/null || true
 
-    # Register (name + url BEFORE --header, which is variadic)
+    # Register at user level
     claude mcp add -t http -s user \
         mycelium "http://$VPS_HOST:9631/mcp" \
         --header "Authorization: Bearer $MCP_TOKEN" >/dev/null 2>&1
 
-    success "MCP registered (HTTP → $VPS_HOST:9631)"
+    # Override project-level .mcp.json if repo is cloned
+    local root
+    root="$(detect_project_root 2>/dev/null || true)"
+    if [[ -n "$root" ]] && [[ -f "$root/.mcp.json" ]]; then
+        cat > "$root/.mcp.json" <<MCPJSON
+{
+  "mcpServers": {
+    "mycelium": {
+      "type": "http",
+      "url": "http://$VPS_HOST:9631/mcp",
+      "headers": {
+        "Authorization": "Bearer $MCP_TOKEN"
+      }
+    }
+  }
+}
+MCPJSON
+        success "MCP registered (project + user)"
+    else
+        success "MCP registered (HTTP → $VPS_HOST:9631)"
+    fi
 
     # Gate init
     mkdir -p ~/.mycelium

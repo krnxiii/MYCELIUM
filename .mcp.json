@@ -1,8 +1,11 @@
 {
   "mcpServers": {
     "mycelium": {
-      "command": "uv",
-      "args": ["run", "python", "mycelium/mcp/server.py"]
+      "type": "http",
+      "url": "http://100.96.119.4:9631/mcp",
+      "headers": {
+        "Authorization": "Bearer D2s8VGseuVV_K8DWxa8xLouLYTnUKYtrpyI-tfP6KgU"
+      }
     }
   }
 }
