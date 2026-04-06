@@ -434,13 +434,25 @@ show_summary() {
         sleep 2
     done
 
+    # Get Tailscale address
+    local ts_ip="" ts_host="" ts_addr
+    ts_ip="$(tailscale ip -4 2>/dev/null || true)"
+    ts_host="$(tailscale status --self --json 2>/dev/null \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))' 2>/dev/null || true)"
+    ts_addr="${ts_ip:-<tailscale-ip>}"
+
     # Compute box width from longest content
     local token_line="Token       $token"
     local sync_line=""
     [[ -n "$st_id" ]] && sync_line="Sync ID     $st_id"
-    local W=44  # min: "MCP         http://<tailscale-ip>:9631/mcp"
-    (( ${#token_line} > W )) && W=${#token_line}
-    (( ${#sync_line}  > W )) && W=${#sync_line}
+    local ts_line=""
+    [[ -n "$ts_ip" ]] && ts_line="Tailscale   ${ts_ip}${ts_host:+  ($ts_host)}"
+    local mcp_line="MCP         http://${ts_addr}:9631/mcp"
+
+    local W=44
+    for _l in "$mcp_line" "$token_line" "$sync_line" "$ts_line"; do
+        (( ${#_l} > W )) && W=${#_l}
+    done
 
     _row() { printf "  ${DIM}│${NC} %-${W}s ${DIM}│${NC}\n" "$1"; }
     _rul() { printf "  ${DIM}%s%s%s${NC}\n" "$1" "$(printf '─%.0s' $(seq 1 $((W+2))))" "$2"; }
@@ -449,9 +461,10 @@ show_summary() {
     _rul "┌" "┐"
     _row "MYCELIUM VPS is ready"
     _rul "├" "┤"
-    _row "MCP         http://<tailscale-ip>:9631/mcp"
-    _row "Neo4j       http://<tailscale-ip>:7474"
-    _row "Syncthing   http://<tailscale-ip>:8384"
+    [[ -n "$ts_line" ]] && _row "$ts_line"
+    _row "MCP         http://${ts_addr}:9631/mcp"
+    _row "Neo4j       http://${ts_addr}:7474"
+    _row "Syncthing   http://${ts_addr}:8384"
     _rul "├" "┤"
     _row "$token_line"
     [[ -n "$st_id" ]] && _row "$sync_line"
