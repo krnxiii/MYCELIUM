@@ -256,9 +256,9 @@ register_mcp() {
     root="$(detect_project_root 2>/dev/null || true)"
     if [[ -n "$root" ]] && [[ -f "$root/.mcp.json" ]]; then
         # Remove mycelium from project config so user-level HTTP registration wins
-        python3 -c "
-import json, pathlib, sys
-p = pathlib.Path('$root/.mcp.json')
+        _MCP_JSON="$root/.mcp.json" python3 -c "
+import json, pathlib, sys, os
+p = pathlib.Path(os.environ['_MCP_JSON'])
 cfg = json.loads(p.read_text())
 if 'mycelium' in cfg.get('mcpServers', {}):
     del cfg['mcpServers']['mycelium']
@@ -424,17 +424,19 @@ setup_syncthing() {
     fi
 
     # Add VPS device locally
-    if echo "$config" | python3 -c "
-import json,sys
+    if echo "$config" | _ST_DEV_ID="$SYNCTHING_DEVICE_ID" python3 -c "
+import json,sys,os
 cfg = json.load(sys.stdin)
 ids = [d['deviceID'] for d in cfg.get('devices',[])]
-sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
+sys.exit(0 if os.environ['_ST_DEV_ID'] in ids else 1)
 " 2>/dev/null; then
         success "VPS device already added (local)"
     else
+        local _dev_json
+        _dev_json="$(_A="$SYNCTHING_DEVICE_ID" _B="$VPS_HOST" python3 -c \
+            "import json,os; print(json.dumps({'deviceID':os.environ['_A'],'name':'mycelium-vps','addresses':['tcp://'+os.environ['_B']+':22000'],'autoAcceptFolders':True}))" 2>/dev/null)"
         curl -sf -X POST -H "$auth_header" -H "Content-Type: application/json" \
-            "$st_api/config/devices" \
-            -d "{\"deviceID\": \"$SYNCTHING_DEVICE_ID\", \"name\": \"mycelium-vps\", \"addresses\": [\"tcp://$VPS_HOST:22000\"], \"autoAcceptFolders\": true}" >/dev/null 2>&1 \
+            "$st_api/config/devices" -d "$_dev_json" >/dev/null 2>&1 \
             && success "VPS device added (local)" \
             || { warn "Failed to add VPS device locally"; _show_manual_syncthing_instructions; return; }
     fi
@@ -442,9 +444,11 @@ sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
     # Add vault folder locally (always recreate to avoid stale DB state)
     curl -sf -X DELETE -H "$auth_header" "$st_api/config/folders/mycelium-vault" >/dev/null 2>&1 || true
     sleep 1
+    local _folder_json
+    _folder_json="$(_P="$VAULT_DIR" _L="$local_id" _R="$SYNCTHING_DEVICE_ID" python3 -c \
+        "import json,os; print(json.dumps({'id':'mycelium-vault','label':'MYCELIUM Vault','path':os.environ['_P'],'type':'sendreceive','rescanIntervalS':10,'fsWatcherEnabled':True,'devices':[{'deviceID':os.environ['_L']},{'deviceID':os.environ['_R']}]}))" 2>/dev/null)"
     curl -sf -X POST -H "$auth_header" -H "Content-Type: application/json" \
-        "$st_api/config/folders" \
-        -d "{\"id\": \"mycelium-vault\", \"label\": \"MYCELIUM Vault\", \"path\": \"$VAULT_DIR\", \"type\": \"sendreceive\", \"rescanIntervalS\": 10, \"fsWatcherEnabled\": true, \"devices\": [{\"deviceID\": \"$local_id\"}, {\"deviceID\": \"$SYNCTHING_DEVICE_ID\"}]}" >/dev/null 2>&1 \
+        "$st_api/config/folders" -d "$_folder_json" >/dev/null 2>&1 \
         && success "Vault folder configured (local)" \
         || { warn "Failed to add vault folder locally"; _show_manual_syncthing_instructions; return; }
 
@@ -470,9 +474,11 @@ sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
     fi
 
     # Add laptop device on VPS
+    local _vps_dev_json
+    _vps_dev_json="$(_D="$local_id" python3 -c \
+        "import json,os; print(json.dumps({'deviceID':os.environ['_D'],'name':'laptop','autoAcceptFolders':True}))" 2>/dev/null)"
     curl -sf -X POST -H "$vps_auth" -H "Content-Type: application/json" \
-        "$vps_st_api/config/devices" \
-        -d "{\"deviceID\": \"$local_id\", \"name\": \"laptop\", \"autoAcceptFolders\": true}" >/dev/null 2>&1 \
+        "$vps_st_api/config/devices" -d "$_vps_dev_json" >/dev/null 2>&1 \
         && success "Laptop device added (VPS)" \
         || warn "VPS already knows this device"
 
@@ -484,9 +490,11 @@ sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
     # Add vault folder on VPS (always recreate to avoid stale DB state)
     curl -sf -X DELETE -H "$vps_auth" "$vps_st_api/config/folders/mycelium-vault" >/dev/null 2>&1 || true
     sleep 1
+    local _vps_folder_json
+    _vps_folder_json="$(_V="$vps_own_id" _L="$local_id" python3 -c \
+        "import json,os; print(json.dumps({'id':'mycelium-vault','label':'MYCELIUM Vault','path':'/var/syncthing/vault','type':'sendreceive','rescanIntervalS':10,'fsWatcherEnabled':True,'devices':[{'deviceID':os.environ['_V']},{'deviceID':os.environ['_L']}]}))" 2>/dev/null)"
     curl -sf -X POST -H "$vps_auth" -H "Content-Type: application/json" \
-        "$vps_st_api/config/folders" \
-        -d "{\"id\": \"mycelium-vault\", \"label\": \"MYCELIUM Vault\", \"path\": \"/var/syncthing/vault\", \"type\": \"sendreceive\", \"rescanIntervalS\": 10, \"fsWatcherEnabled\": true, \"devices\": [{\"deviceID\": \"$vps_own_id\"}, {\"deviceID\": \"$local_id\"}]}" >/dev/null 2>&1 \
+        "$vps_st_api/config/folders" -d "$_vps_folder_json" >/dev/null 2>&1 \
         && success "Vault folder configured (VPS)" \
         || { warn "Failed to configure VPS vault folder"; _show_manual_syncthing_instructions; return; }
 

@@ -505,17 +505,20 @@ async def impl_list_neurons(
     base  = ("WHERE e.expired_at IS NULL "
              "AND (e.expires_at IS NULL OR e.expires_at > datetime())")
     where = f"{base} AND e.neuron_type = $type" if neuron_type else base
-    order = {
+    _ORDER_ALLOWLIST = {
         "freshness": "e.freshness DESC", "confidence": "e.importance DESC",
         "name": "e.name ASC", "weight": "ew DESC",
-    }.get(sort_by, "e.freshness DESC")
+    }
+    if sort_by not in _ORDER_ALLOWLIST:
+        sort_by = "freshness"
+    order = _ORDER_ALLOWLIST[sort_by]
 
     return await my._c.driver.execute_query(
         f"MATCH (e:Neuron) {where} "
         "WITH e, coalesce(e.importance, e.confidence) AS imp, e.decay_rate AS dr, "
         "  duration.between(e.freshness, datetime()).days AS days "
         "WITH e, imp * exp(-dr * days) AS ew, imp "
-        f"RETURN e.uuid AS uuid, e.name AS name, e.neuron_type AS type, "
+        "RETURN e.uuid AS uuid, e.name AS name, e.neuron_type AS type, "
         "  imp AS importance, e.confirmations AS confirmations, "
         "  coalesce(e.origin, 'raw') AS origin, "
         f"  round(ew * 10000) / 10000 AS weight ORDER BY {order} LIMIT $limit",
