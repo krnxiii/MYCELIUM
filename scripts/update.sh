@@ -86,11 +86,19 @@ if ! spin_log $! "$logfile" "Building images..."; then
 fi
 success "Images built"
 
+# ── Graceful stop (prevents data loss on neo4j) ─────────────────
+step "Stopping services gracefully"
+$COMPOSE_CMD stop -t 30 >>"$logfile" 2>&1 &
+if ! spin_log $! "$logfile" "Stopping containers..."; then
+    error "Stop failed (continuing anyway):"; tail -5 "$logfile" >&2
+fi
+success "Services stopped"
+
 # ── Restart ─────────────────────────────────────────────────────
-step "Restarting services"
+step "Starting services"
 $COMPOSE_CMD up -d >>"$logfile" 2>&1 &
 if ! spin_log $! "$logfile" "Starting containers..."; then
-    error "Restart failed:"; tail -10 "$logfile" >&2; rm -f "$logfile"; exit 1
+    error "Start failed:"; tail -10 "$logfile" >&2; rm -f "$logfile"; exit 1
 fi
 success "Containers started"
 
