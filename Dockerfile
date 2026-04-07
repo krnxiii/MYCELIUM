@@ -15,10 +15,10 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --extra mcp --extra telegram --frozen --no-install-project
+RUN uv sync --no-dev --extra mcp --extra telegram --extra render --frozen --no-install-project
 
 COPY mycelium/ mycelium/
-RUN uv sync --no-dev --extra mcp --extra telegram --frozen
+RUN uv sync --no-dev --extra mcp --extra telegram --extra render --frozen
 
 EXPOSE 9631
 
