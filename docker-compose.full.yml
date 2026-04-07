@@ -2,7 +2,7 @@
 services:
   mycelium:
     environment:
-      MYCELIUM_SEMANTIC__API_BASE_URL: http://embeddings:8080
+      MYCELIUM_SEMANTIC__API_BASE_URL: http://embeddings:9632
       MYCELIUM_SEMANTIC__API_KEY: ""
     depends_on:
       neo4j:

@@ -1,46 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 
 # ── Colors & Constants ──────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'
+CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'
+YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'
 DIM='\033[2m'; NC='\033[0m'
 
 MIN_PYTHON="3.12"
 ENV_FILE=".env"
 ENV_EXAMPLE=".env.example"
 
+BRAILLE=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
 # ── Helpers ─────────────────────────────────────────────────────────
-info()    { printf "${BLUE}ℹ${NC}  %s\n" "$1"; }
-success() { printf "${GREEN}✓${NC}  %s\n" "$1"; }
-warn()    { printf "${YELLOW}⚠${NC}  %s\n" "$1"; }
-error()   { printf "${RED}✗${NC}  %s\n" "$1" >&2; }
-step()    { printf "\n${BOLD}${CYAN}[%s]${NC} %s\n" "$1" "$2"; }
+success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
+warn()    { printf "  ${YELLOW}!${NC}  %s\n" "$1"; }
+error()   { printf "  ${RED}✗${NC}  %s\n" "$1" >&2; }
+hint()    { printf "     ${DIM}%s${NC}\n" "$1"; }
+sep()     { printf "  ${DIM}─────────────────────────────────────────────${NC}\n"; }
+
+step() {
+    printf "\n${BOLD}${BCYAN}[%s]${NC} ${BOLD}%s${NC}\n" "$1" "$2"
+}
 
 ask() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -r answer
-    echo "${answer:-$default}"
+    printf '%s' "${answer:-$default}"
 }
 
 ask_secret() {
     local prompt="$1" default="${2:-}"
     if [[ -n "$default" ]]; then
-        printf "${BOLD}?${NC}  %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
+        printf "  ${BOLD}>${NC} %s ${DIM}[%s]${NC}: " "$prompt" "$default" >&2
     else
-        printf "${BOLD}?${NC}  %s: " "$prompt" >&2
+        printf "  ${BOLD}>${NC} %s: " "$prompt" >&2
     fi
     read -rs answer
-    echo >&2
-    echo "${answer:-$default}"
+    printf '\n' >&2
+    printf '%s' "${answer:-$default}"
 }
 
-# Replace value for key in .env file (safe for any characters — no sed escaping)
+spin() {
+    local pid=$1 label="${2:-}"
+    local i=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  ${DIM}%s${NC} %s" "${BRAILLE[$((i % ${#BRAILLE[@]}))]}" "$label" >&2
+        sleep 0.1
+        ((i++)) || true
+    done
+    printf "\r\033[K" >&2
+    wait "$pid" || return $?
+}
+
 set_env_val() {
     local key="$1" val="$2" file="${3:-$ENV_FILE}"
     local tmp="${file}.tmp"
@@ -57,44 +75,36 @@ set_env_val() {
 detect_project_root() {
     local dir
     dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    # If run from scripts/, go up one level
-    if [[ "$(basename "$dir")" == "scripts" ]]; then
-        dir="$(dirname "$dir")"
-    fi
-    # Verify it's actually the project root
+    [[ "$(basename "$dir")" == "scripts" ]] && dir="$(dirname "$dir")"
     if [[ ! -f "$dir/Makefile" ]] || [[ ! -f "$dir/$ENV_EXAMPLE" ]]; then
         error "Cannot find project root (no Makefile or $ENV_EXAMPLE)"
-        error "Run from the project root or from scripts/"
         exit 1
     fi
-    echo "$dir"
+    printf '%s' "$dir"
 }
 
 # ── OS Detection ────────────────────────────────────────────────────
 detect_os() {
     case "$(uname -s)" in
-        Darwin) echo "macos"  ;;
-        Linux)  echo "linux"  ;;
-        *)      echo "unknown" ;;
+        Darwin) printf 'macos'  ;;
+        Linux)  printf 'linux'  ;;
+        *)      printf 'unknown' ;;
     esac
 }
 
 pkg_manager() {
-    if command -v brew &>/dev/null; then echo "brew"
-    elif command -v apt-get &>/dev/null; then echo "apt"
-    elif command -v dnf &>/dev/null; then echo "dnf"
-    else echo "unknown"
+    if command -v brew &>/dev/null; then printf 'brew'
+    elif command -v apt-get &>/dev/null; then printf 'apt'
+    elif command -v dnf &>/dev/null; then printf 'dnf'
+    else printf 'unknown'
     fi
 }
 
 # ── Dependency Checks ──────────────────────────────────────────────
 check_python() {
-    if ! command -v python3 &>/dev/null; then
-        return 1
-    fi
+    if ! command -v python3 &>/dev/null; then return 1; fi
     local ver
     ver="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-    # Compare: required >= MIN_PYTHON
     python3 -c "
 import sys
 cur = tuple(map(int, '$ver'.split('.')))
@@ -103,148 +113,138 @@ sys.exit(0 if cur >= req else 1)
 "
 }
 
-check_uv() { command -v uv &>/dev/null; }
-
-check_docker() { command -v docker &>/dev/null; }
-
-check_docker_daemon() {
-    docker info &>/dev/null
-}
-
-check_docker_compose() {
-    docker compose version &>/dev/null
-}
-
-check_make() { command -v make &>/dev/null; }
+check_uv()             { command -v uv &>/dev/null; }
+check_docker()         { command -v docker &>/dev/null; }
+check_docker_daemon()  { docker info &>/dev/null; }
+check_docker_compose() { docker compose version &>/dev/null; }
+check_make()           { command -v make &>/dev/null; }
 
 # ── Dependency Table ────────────────────────────────────────────────
 check_deps() {
     local scenario="$1"
     local all_ok=true
-    local os
+    local os pkg last_dep
     os="$(detect_os)"
-    local pkg
     pkg="$(pkg_manager)"
 
-    printf "\n  %-22s %s\n" "Dependency" "Status"
-    printf "  %-22s %s\n" "──────────────────────" "──────"
+    printf '\n'
 
-    # make — always needed
+    # Determine last dep for └─
+    if [[ "$scenario" == "1" ]]; then last_dep="uv"; else last_dep="docker compose"; fi
+
+    # make
+    local prefix="${DIM}├─${NC}"
     if check_make; then
-        printf "  %-22s ${GREEN}✓ found${NC}\n" "make"
+        printf "  $prefix %-18s ${GREEN}found${NC}\n" "make"
     else
-        printf "  %-22s ${RED}✗ missing${NC}\n" "make"
+        printf "  $prefix %-18s ${RED}missing${NC}\n" "make"
         all_ok=false
     fi
 
-    # Docker — always needed (Neo4j runs in Docker)
+    # docker
     if check_docker; then
-        printf "  %-22s ${GREEN}✓ found${NC}\n" "docker"
+        printf "  $prefix %-18s ${GREEN}found${NC}\n" "docker"
         if check_docker_daemon; then
-            printf "  %-22s ${GREEN}✓ running${NC}\n" "docker daemon"
+            printf "  $prefix %-18s ${GREEN}running${NC}\n" "docker daemon"
         else
-            printf "  %-22s ${RED}✗ not running${NC}\n" "docker daemon"
+            printf "  $prefix %-18s ${RED}not running${NC}\n" "docker daemon"
             all_ok=false
         fi
     else
-        printf "  %-22s ${RED}✗ missing${NC}\n" "docker"
+        printf "  $prefix %-18s ${RED}missing${NC}\n" "docker"
         all_ok=false
     fi
 
-    # Docker Compose — always needed
+    # docker compose
+    if [[ "$last_dep" == "docker compose" ]]; then prefix="${DIM}└─${NC}"; fi
     if check_docker_compose; then
-        printf "  %-22s ${GREEN}✓ found${NC}\n" "docker compose"
+        printf "  $prefix %-18s ${GREEN}found${NC}\n" "docker compose"
     else
-        printf "  %-22s ${RED}✗ missing${NC}\n" "docker compose"
+        printf "  $prefix %-18s ${RED}missing${NC}\n" "docker compose"
         all_ok=false
     fi
 
-    # Python & uv — only for scenario 1 (local dev)
+    # python & uv (scenario 1 only)
     if [[ "$scenario" == "1" ]]; then
+        prefix="${DIM}├─${NC}"
         if check_python; then
             local pyver
             pyver="$(python3 --version 2>&1)"
-            printf "  %-22s ${GREEN}✓ %s${NC}\n" "python ≥$MIN_PYTHON" "$pyver"
+            printf "  $prefix %-18s ${GREEN}%s${NC}\n" "python ≥$MIN_PYTHON" "$pyver"
         else
-            printf "  %-22s ${RED}✗ missing or <$MIN_PYTHON${NC}\n" "python ≥$MIN_PYTHON"
+            printf "  $prefix %-18s ${RED}missing${NC}\n" "python ≥$MIN_PYTHON"
             all_ok=false
         fi
 
+        prefix="${DIM}└─${NC}"
         if check_uv; then
-            printf "  %-22s ${GREEN}✓ found${NC}\n" "uv"
+            printf "  $prefix %-18s ${GREEN}found${NC}\n" "uv"
         else
-            printf "  %-22s ${YELLOW}○ will install${NC}\n" "uv"
+            printf "  $prefix %-18s ${YELLOW}will install${NC}\n" "uv"
         fi
     fi
 
-    echo
+    printf '\n'
 
     if [[ "$all_ok" == false ]]; then
-        warn "Some dependencies are missing. Install hints:"
-        echo
-
+        warn "Missing dependencies:"
         if ! check_make; then
             case "$os" in
-                macos) info "  make:    xcode-select --install" ;;
+                macos) hint "make:    xcode-select --install" ;;
                 linux)
                     case "$pkg" in
-                        apt) info "  make:    sudo apt install build-essential" ;;
-                        dnf) info "  make:    sudo dnf install make" ;;
-                        *)   info "  make:    install via your package manager" ;;
+                        apt) hint "make:    sudo apt install build-essential" ;;
+                        dnf) hint "make:    sudo dnf install make" ;;
+                        *)   hint "make:    install via your package manager" ;;
                     esac ;;
             esac
         fi
-
         if ! check_docker; then
             case "$os" in
-                macos) info "  docker:  brew install --cask docker  (then open Docker.app)" ;;
-                linux) info "  docker:  https://docs.docker.com/engine/install/" ;;
+                macos) hint "docker:  brew install --cask docker  (then open Docker.app)" ;;
+                linux) hint "docker:  https://docs.docker.com/engine/install/" ;;
             esac
         elif ! check_docker_daemon; then
             case "$os" in
-                macos) info "  docker:  open Docker.app (daemon not running)" ;;
-                linux) info "  docker:  sudo systemctl start docker" ;;
+                macos) hint "docker:  open Docker.app (daemon not running)" ;;
+                linux) hint "docker:  sudo systemctl start docker" ;;
             esac
         fi
-
         if ! check_docker_compose && check_docker; then
-            info "  compose: included in Docker Desktop; or: docker compose plugin"
+            hint "compose: included in Docker Desktop; or: docker compose plugin"
         fi
-
-        if [[ "$scenario" == "1" ]]; then
-            if ! check_python; then
-                case "$os" in
-                    macos) info "  python:  brew install python@3.12" ;;
-                    linux)
-                        case "$pkg" in
-                            apt) info "  python:  sudo apt install python3.12 python3.12-venv" ;;
-                            dnf) info "  python:  sudo dnf install python3.12" ;;
-                            *)   info "  python:  install Python ≥$MIN_PYTHON" ;;
-                        esac ;;
-                esac
-            fi
+        if [[ "$scenario" == "1" ]] && ! check_python; then
+            case "$os" in
+                macos) hint "python:  brew install python@3.12" ;;
+                linux)
+                    case "$pkg" in
+                        apt) hint "python:  sudo apt install python3.12 python3.12-venv" ;;
+                        dnf) hint "python:  sudo dnf install python3.12" ;;
+                        *)   hint "python:  install Python ≥$MIN_PYTHON" ;;
+                    esac ;;
+            esac
         fi
-
-        echo
-        error "Fix missing dependencies and re-run this script."
+        printf '\n'
+        error "Fix missing dependencies and re-run."
         exit 1
     fi
 }
 
 # ── Scenario Selection ──────────────────────────────────────────────
 select_scenario() {
-    echo >&2
-    printf "  ${BOLD}1)${NC}  Local dev       — Python on host, Neo4j in Docker, embeddings via API\n" >&2
-    printf "  ${BOLD}2)${NC}  Docker + API    — everything in Docker, embeddings via DeepInfra API\n" >&2
-    printf "  ${BOLD}3)${NC}  Full Docker     — everything local, no external APIs (downloads ~2 GB model)\n" >&2
-    echo >&2
+    printf '\n' >&2
+    printf "  ${BOLD}1)${NC}  Local dev       ${DIM}— Python on host, Neo4j in Docker${NC}\n" >&2
+    printf "  ${BOLD}2)${NC}  Docker + API    ${DIM}— everything in Docker, embeddings via API${NC}\n" >&2
+    printf "  ${BOLD}3)${NC}  Full Docker     ${DIM}— everything local, no external APIs (~2 GB)${NC}\n" >&2
+    printf "  ${BOLD}4)${NC}  Connect to VPS  ${DIM}— link to an existing VPS deployment${NC}\n" >&2
+    printf '\n' >&2
 
     while true; do
         local choice
-        choice="$(ask "Choose scenario [1/2/3]" "1")"
+        choice="$(ask "Choose scenario [1/2/3/4]" "1")"
         case "$choice" in
-            1|2|3) echo "$choice"; return ;;
-            *) warn "Enter 1, 2, or 3" >&2 ;;
+            1|2|3|4) printf '%s' "$choice"; return ;;
+            *) warn "Enter 1, 2, 3, or 4" >&2 ;;
         esac
     done
 }
@@ -266,24 +266,21 @@ generate_env() {
         local overwrite
         overwrite="$(ask "Existing .env found. Overwrite? (backup → $backup)" "y")"
         case "$overwrite" in
-            [yY]*) cp "$ENV_FILE" "$backup"; success "Backup saved: $backup" ;;
-            *)     info "Keeping existing .env"; return 0 ;;
+            [yY]*) cp "$ENV_FILE" "$backup"; success "Backup: $backup" ;;
+            *)     hint "Keeping existing .env"; return 0 ;;
         esac
     fi
 
-    # Start from template
     cp "$ENV_EXAMPLE" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 
-    # ── API key (scenarios 1 & 2 only) ──
+    # ── API key (scenarios 1 & 2) ──
     if [[ "$scenario" != "3" ]]; then
-        echo
-        info "Scenario $scenario uses DeepInfra API for embeddings."
-        info "Get a free key at: https://deepinfra.com/dash/api_keys"
-        echo
-
+        sep
         local api_key
         while true; do
             api_key="$(ask_secret "DeepInfra API key")"
+            hint "Free key: https://deepinfra.com/dash/api_keys"
             if [[ -z "$api_key" ]]; then
                 warn "API key is required for this scenario"
             elif validate_api_key "$api_key"; then
@@ -292,35 +289,32 @@ generate_env() {
                 warn "Key must be ≥10 alphanumeric/dash/underscore characters"
             fi
         done
-
         set_env_val "MYCELIUM_SEMANTIC__API_KEY" "$api_key"
     else
-        # Scenario 3: local embeddings, no API key needed
         set_env_val "MYCELIUM_SEMANTIC__PROVIDER" "api"
-        set_env_val "MYCELIUM_SEMANTIC__API_BASE_URL" "http://localhost:8090"
+        set_env_val "MYCELIUM_SEMANTIC__API_BASE_URL" "http://localhost:9632"
         set_env_val "MYCELIUM_SEMANTIC__API_KEY" ""
     fi
 
-    # ── Owner name (optional) ──
-    echo
+    # ── Owner ──
+    sep
     local owner_name
-    owner_name="$(ask "What's your name? (optional, for first-person linking)" "")"
-    if [[ -n "$owner_name" ]]; then
-        set_env_val "MYCELIUM_OWNER__NAME" "$owner_name"
-    fi
+    owner_name="$(ask "Your name" "")"
+    hint "Optional. Used for graph ownership metadata."
+    [[ -n "$owner_name" ]] && set_env_val "MYCELIUM_OWNER__NAME" "$owner_name"
 
-    # ── Obsidian layer ──
-    echo
-    info "Obsidian layer adds YAML frontmatter to vault files for Graph View."
-    info "Requires Obsidian (https://obsidian.md) pointed at ~/.mycelium/vault/"
+    # ── Obsidian ──
+    sep
+    printf "  ${BCYAN}Obsidian${NC}  ${DIM}visualization layer for vault files${NC}\n"
     local obsidian
-    obsidian="$(ask "Enable Obsidian visualization layer?" "y")"
+    obsidian="$(ask "Enable Obsidian layer?" "y")"
+    hint "Adds YAML frontmatter for Graph View. Point Obsidian at ~/.mycelium/vault/"
     case "$obsidian" in
         [nN]*) set_env_val "MYCELIUM_OBSIDIAN__ENABLED" "false" ;;
         *)
             set_env_val "MYCELIUM_OBSIDIAN__ENABLED" "true"
             local project_neurons
-            project_neurons="$(ask "Project neurons as .md files in vault/neurons/? (experimental)" "y")"
+            project_neurons="$(ask "Project neurons as .md files? (experimental)" "y")"
             case "$project_neurons" in
                 [yY]*) set_env_val "MYCELIUM_OBSIDIAN__PROJECT_NEURONS" "true" ;;
                 *)     set_env_val "MYCELIUM_OBSIDIAN__PROJECT_NEURONS" "false" ;;
@@ -328,38 +322,39 @@ generate_env() {
             ;;
     esac
 
-    # ── Sigma.js render (optional) ──
-    echo
-    info "Sigma.js render opens the knowledge graph in a browser (localhost:8500)."
-    info "Alternative to Obsidian Graph View — interactive, with ForceAtlas2 layout."
+    # ── Sigma.js render ──
+    sep
+    printf "  ${BCYAN}Sigma.js${NC}  ${DIM}interactive graph viewer in browser${NC}\n"
     local render_enabled
-    render_enabled="$(ask "Enable Sigma.js graph viewer?" "y")"
+    render_enabled="$(ask "Enable graph viewer?" "y")"
+    hint "Opens at localhost:9633 via 'make render'"
     case "$render_enabled" in
         [yY]*) set_env_val "MYCELIUM_RENDER__ENABLED" "true" ;;
         *)     set_env_val "MYCELIUM_RENDER__ENABLED" "false" ;;
     esac
 
     # ── Neo4j password ──
-    echo
+    sep
     local neo4j_pass
     neo4j_pass="$(ask_secret "Neo4j password" "password")"
     if [[ "${#neo4j_pass}" -lt 4 ]]; then
-        warn "Password too short (min 4 chars), using default"
+        warn "Too short (min 4 chars), using default"
         neo4j_pass="password"
     fi
-    if [[ "$neo4j_pass" != "password" ]]; then
-        set_env_val "MYCELIUM_NEO4J__PASSWORD" "$neo4j_pass"
-    fi
+    [[ "$neo4j_pass" != "password" ]] && set_env_val "MYCELIUM_NEO4J__PASSWORD" "$neo4j_pass"
 
+    printf '\n'
     success ".env generated"
 }
 
 # ── Install uv (if missing, scenario 1 only) ───────────────────────
 ensure_uv() {
     if check_uv; then return 0; fi
-    info "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    # Source the env to pick up uv in current session
+    (curl -LsSf https://astral.sh/uv/install.sh | sh) >/dev/null 2>&1 &
+    if ! spin $! "Installing uv..."; then
+        error "uv installation failed. Install manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     if check_uv; then
         success "uv installed"
@@ -376,16 +371,13 @@ run_scenario() {
     case "$scenario" in
         1)
             ensure_uv
-            info "Running: make quickstart"
             make quickstart
             ;;
         2)
-            info "Running: make quickstart-app"
             make quickstart-app
             ;;
         3)
-            info "Running: make quickstart-docker"
-            warn "First run downloads BGE-M3 model for local embeddings. This may take a while."
+            warn "First run downloads BGE-M3 model (~2 GB). This may take a while."
             make quickstart-docker
             ;;
     esac
@@ -397,8 +389,8 @@ register_mcp() {
 
     if ! command -v claude &>/dev/null; then
         warn "claude CLI not found — skipping MCP registration"
-        info "Install: https://docs.anthropic.com/en/docs/claude-code"
-        info "Then run: make mcp-install"
+        hint "Install: curl -fsSL https://claude.ai/install.sh | bash"
+        hint "Then run: make mcp-install"
         return 0
     fi
 
@@ -406,51 +398,49 @@ register_mcp() {
     root="$(pwd)"
 
     if [[ "$scenario" != "1" ]]; then
-        # Docker: MCP via HTTP (container exposes :8000)
         claude mcp remove mycelium -s user 2>/dev/null || true
-        claude mcp add -t http -s user mycelium http://localhost:8000/mcp
-        success "MCP server registered (HTTP → localhost:8000)"
+        claude mcp add -t http -s user mycelium http://localhost:9631/mcp
+        success "MCP registered (HTTP → localhost:9631)"
     else
-        # Local dev: MCP via stdio
         claude mcp remove mycelium -s user 2>/dev/null || true
         claude mcp add -t stdio -s user mycelium -- uv run --project "$root" --extra mcp python -m mycelium.mcp.server
-        success "MCP server registered globally in Claude Code"
-        info "Available from any directory. Verify: claude mcp list"
+        success "MCP registered (stdio)"
+        hint "Available from any directory. Verify: claude mcp list"
     fi
 
-    # Gate init: default read=on, write=off
+    # Gate init
     mkdir -p ~/.mycelium
     touch ~/.mycelium/.read_enabled
     success "Gate init: read=on, write=off"
 
-    # Install skills globally
-    local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall mycelium-reflect mycelium-distill mycelium-discover)
+    # Skills
+    local skills=(mycelium-on mycelium-off mycelium-ingest mycelium-recall
+                  mycelium-reflect mycelium-distill mycelium-discover mycelium-domain)
     for skill in "${skills[@]}"; do
         mkdir -p ~/.claude/skills/"$skill"
         cp "$root/.claude/skills/$skill/SKILL.md" ~/.claude/skills/"$skill"/SKILL.md
     done
-    success "Skills installed: ${skills[*]/#//}"
+    success "Skills installed (${#skills[@]})"
 
-    # Offer global access rules
+    # Access rules
     install_global_rules "$root"
 }
 
-# ── Global CLAUDE.md rules (optional) ────────────────────────────
+# ── Global CLAUDE.md rules ──────────────────────────────────────────
 install_global_rules() {
     local root="$1"
     local marker="## MYCELIUM MCP Access Control"
     local target="$HOME/.claude/CLAUDE.md"
 
     if [[ -f "$target" ]] && grep -qF "$marker" "$target"; then
-        success "Access rules already in $target"
+        success "Access rules already present"
         return 0
     fi
 
-    echo
-    info "Global access rules prevent the agent from toggling MCP access on its own."
-    info "Without them, the agent may enable write access without asking."
+    printf '\n'
     local answer
     answer="$(ask "Add MYCELIUM access rules to ~/.claude/CLAUDE.md?" "y")"
+    hint "Prevents agent from toggling MCP access without asking"
     case "$answer" in
         [yY]*)
             mkdir -p "$(dirname "$target")"
@@ -462,7 +452,7 @@ install_global_rules() {
 - Use `/mycelium-on` and `/mycelium-off` skills to toggle access
 - If a tool returns "disabled", tell the user to run the skill
 RULES
-            success "Access rules added to $target" ;;
+            success "Access rules added" ;;
         *)
             warn "Skipped. Run later: make mcp-rules-install" ;;
     esac
@@ -483,7 +473,6 @@ WRAPPER
     chmod +x "$wrapper"
     success "CLI installed: $wrapper"
 
-    # Check PATH
     if ! echo "$PATH" | tr ':' '\n' | grep -qx "$bin_dir"; then
         warn "\$HOME/.local/bin is not in your PATH"
         local shell_rc
@@ -492,8 +481,7 @@ WRAPPER
             bash) shell_rc="~/.bashrc" ;;
             *)    shell_rc="your shell config" ;;
         esac
-        info "Add to $shell_rc:"
-        info "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+        hint "Add to $shell_rc:  export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 }
 
@@ -501,89 +489,94 @@ WRAPPER
 show_summary() {
     local scenario="$1"
 
-    echo
-    printf "  ${BOLD}${GREEN}MYCELIUM is ready!${NC}\n"
-    echo
-    printf "  %-20s %s\n" "Service" "URL"
-    printf "  %-20s %s\n" "────────────────────" "──────────────────────────"
-    printf "  %-20s %s\n" "Neo4j Browser"       "http://localhost:7474"
-    printf "  %-20s %s\n" "Neo4j Bolt"          "bolt://localhost:7687"
+    printf '\n'
+    printf "  ${DIM}┌──────────────────────────────────────────────┐${NC}\n"
+    printf "  ${DIM}│${NC}  ${BOLD}${GREEN}MYCELIUM is ready${NC}                            ${DIM}│${NC}\n"
+    printf "  ${DIM}├──────────────────────────────────────────────┤${NC}\n"
+    printf "  ${DIM}│${NC}  ${BCYAN}Neo4j${NC}     http://localhost:7474             ${DIM}│${NC}\n"
+    printf "  ${DIM}│${NC}  ${BCYAN}Bolt${NC}      bolt://localhost:7687             ${DIM}│${NC}\n"
 
     if [[ "$scenario" == "2" || "$scenario" == "3" ]]; then
-        printf "  %-20s %s\n" "MCP (HTTP)" "http://localhost:8000/mcp"
+        printf "  ${DIM}│${NC}  ${BCYAN}MCP${NC}       http://localhost:9631/mcp        ${DIM}│${NC}\n"
     fi
-
     if [[ "$scenario" == "3" ]]; then
-        printf "  %-20s %s\n" "TEI Embeddings" "http://localhost:8090"
+        printf "  ${DIM}│${NC}  ${BCYAN}TEI${NC}       http://localhost:9632             ${DIM}│${NC}\n"
     fi
-
-    # Check if render is enabled in .env
     if grep -q '^MYCELIUM_RENDER__ENABLED=true' "$ENV_FILE" 2>/dev/null; then
-        printf "  %-20s %s\n" "Graph Viewer" "http://localhost:8500 (make render)"
+        printf "  ${DIM}│${NC}  ${BCYAN}Graph${NC}     http://localhost:9633  ${DIM}make render${NC} ${DIM}│${NC}\n"
     fi
 
-    echo
-    printf "  ${BOLD}Next steps:${NC}\n"
+    printf "  ${DIM}└──────────────────────────────────────────────┘${NC}\n"
+
+    printf '\n'
+    printf "  ${BOLD}${BCYAN}Quick start${NC}\n"
     case "$scenario" in
         1)
-            printf "    make serve        — start the MCP server\n"
+            printf "  ${DIM}├─${NC} make serve        ${DIM}start MCP server${NC}\n"
             if grep -q '^MYCELIUM_RENDER__ENABLED=true' "$ENV_FILE" 2>/dev/null; then
-                printf "    make render       — open Sigma.js graph viewer\n"
+                printf "  ${DIM}├─${NC} make render       ${DIM}open graph viewer${NC}\n"
             fi
-            printf "    make test         — run tests\n"
-            printf "    claude            — use MYCELIUM tools from anywhere\n"
+            printf "  ${DIM}├─${NC} make test         ${DIM}run tests${NC}\n"
+            printf "  ${DIM}└─${NC} claude            ${DIM}use MYCELIUM tools${NC}\n"
             ;;
         2|3)
-            printf "    claude            — use MYCELIUM tools via HTTP MCP\n"
-            printf "    docker compose logs -f  — watch logs\n"
-            printf "    make down               — stop services\n"
+            printf "  ${DIM}├─${NC} claude                  ${DIM}use MYCELIUM tools${NC}\n"
+            printf "  ${DIM}├─${NC} docker compose logs -f  ${DIM}watch logs${NC}\n"
+            printf "  ${DIM}└─${NC} make down               ${DIM}stop services${NC}\n"
             ;;
     esac
-    echo
+    printf '\n'
 }
 
 # ── Main ────────────────────────────────────────────────────────────
 main() {
-    echo
-    printf "  ${BOLD}${CYAN}MYCELIUM${NC} — installer\n"
-    printf "  ${DIM}Mind Wide Web — distributed consciousness OS${NC}\n"
+    printf '\n'
+    printf "  ${BCYAN}MYCELIUM${NC}  ${DIM}installer${NC}\n"
 
     local root
     root="$(detect_project_root)"
     cd "$root"
 
-    # Step 1: Scenario selection (before deps, to know what to check)
-    step "1/6" "Select installation scenario"
+    # Step 1: Scenario
+    local total=5
+    step "1/$total" "Select installation scenario"
     local scenario
     scenario="$(select_scenario)"
-    local labels=( [1]="Local dev" [2]="Docker + API" [3]="Full Docker" )
+    local labels=( [1]="Local dev" [2]="Docker + API" [3]="Full Docker" [4]="Connect to VPS" )
     success "Scenario $scenario: ${labels[$scenario]}"
 
-    # Step 2: Check dependencies (based on scenario)
-    step "2/6" "Checking dependencies"
+    # Scenario 4 → connect-vps.sh
+    if [[ "$scenario" == "4" ]]; then
+        exec bash scripts/connect-vps.sh
+    fi
+
+    [[ "$scenario" == "1" ]] && total=6
+
+    # Step 2: Dependencies
+    step "2/$total" "Checking dependencies"
     check_deps "$scenario"
     success "All dependencies satisfied"
 
-    # Step 3: Generate .env
-    step "3/6" "Configure environment"
+    # Step 3: Environment
+    step "3/$total" "Configure environment"
     generate_env "$scenario"
 
-    # Step 4: Run make target
-    step "4/6" "Installing MYCELIUM"
+    # Step 4: Install
+    step "4/$total" "Installing MYCELIUM"
     run_scenario "$scenario"
 
-    # Step 5: Register MCP server in Claude Code
-    step "5/7" "Registering MCP server"
+    # Step 5: MCP
+    step "5/$total" "Registering MCP server"
     register_mcp "$scenario"
 
-    # Step 6: Install CLI wrapper (scenario 1 only)
+    # Step 6: CLI (scenario 1 only)
     if [[ "$scenario" == "1" ]]; then
-        step "6/7" "Installing CLI"
+        step "6/$total" "Installing CLI"
         install_cli "$root"
     fi
 
-    # Step 7: Summary
-    step "7/7" "Done!"
+    # Done
+    step "Done" "Ready!"
     show_summary "$scenario"
 }
 

@@ -35,8 +35,15 @@ render = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
 ]
+telegram = [
+    "aiogram>=3.0",
+    "fastmcp>=2.0",
+]
+telegram-deepgram = [
+    "deepgram-sdk>=3.0",
+]
 full = [
-    "mycelium[mcp,local-ml,render]",
+    "mycelium[mcp,local-ml,render,telegram]",
 ]
 
 [project.scripts]
@@ -73,6 +80,6 @@ packages = ["mycelium"]
 mypy_path = "."
 
 [[tool.mypy.overrides]]
-module = ["structlog", "structlog.*", "neo4j", "neo4j.*", "fastembed", "fastembed.*", "fastmcp", "fastmcp.*", "fastapi", "fastapi.*", "uvicorn", "uvicorn.*"]
+module = ["structlog", "structlog.*", "neo4j", "neo4j.*", "fastembed", "fastembed.*", "fastmcp", "fastmcp.*", "fastapi", "fastapi.*", "uvicorn", "uvicorn.*", "aiogram", "aiogram.*", "mcp", "mcp.*"]
 ignore_missing_imports = true
 

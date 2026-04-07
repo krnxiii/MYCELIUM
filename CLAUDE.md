@@ -66,7 +66,7 @@
 
 ## Архитектура
 
-См. **docs/V2_TRANSITION.txt** — единый источник истины (v2).
+См. **docs/v2_done/V2_TRANSITION.txt** — архитектурный справочник (v2).
 Архив v1: `docs/v1/` (ARCHITECTURE, CONCEPT, DATABASE_SCHEMA, SYSTEM_INTELLIGENCE).
 
 ```
@@ -79,7 +79,7 @@
   • Local Vault (SHA-256 addressed file storage)
 ```
 
-**ВАЖНО:** При работе с кодом читай актуальную схему из docs/V2_TRANSITION.txt,
+**ВАЖНО:** При работе с кодом читай актуальную схему из docs/v2_done/V2_TRANSITION.txt,
 не полагайся на этот snapshot. Архитектура эволюционирует.
 
 ---
@@ -142,20 +142,36 @@ LIMIT 10;
 
 ## Структура документации
 
-### docs/V2_TRANSITION.txt
-Полный план v2: модель данных, пайплайн, search, config, фазы реализации.
-**Единый источник истины для архитектуры.**
-
 ### docs/BACKLOG.txt
-Отложенные идеи и будущие фичи (systemd, bootstrap, telegram, git-sync и др.).
-Обновляй статусы при реализации.
+Master roadmap: все фичи с приоритетами и статусами.
+Консолидирует 5 источников из v2_done/. Обновляй при реализации.
 
-### docs/ASB_FEATURES_TRANSFER.txt
-Feature transfer из Agent Second Brain — 22 фичи с приоритетами и статусами.
+### docs/DESIGN_DISTRIBUTED_ARCHITECTURE.txt
+Дизайн распределённой архитектуры: VPS, Telegram, Tailscale, Syncthing.
+
+### docs/DESIGN_METRIC_TRACKING.txt
+Дизайн metric tracking (time-series данные отдельно от графа).
+
+### docs/DOMAIN_BLUEPRINTS.txt
+Адаптивные knowledge domains: пользовательские blueprints для extraction.
+
+### docs/OBSIDIAN_LAYER.txt
+Obsidian как визуализационный слой: frontmatter, wikilinks, sync.
+
+### docs/DESIGN_WIKI_SYNTHESIS.txt
+Wiki synthesis layer: компиляция графа в markdown-страницы, save_insight, lint.
+
+### docs/v2_done/V2_TRANSITION.txt
+Архитектурный справочник v2: модель данных, пайплайн, search, config.
 
 ### docs/v1/ (архив)
-ARCHITECTURE.txt, CONCEPT.txt, DATABASE_SCHEMA.txt, SYSTEM_INTELLIGENCE.txt.
 Документация v1 — для справки, не для разработки.
+
+### docs/research/ (архив)
+Завершённые исследования: prompt efficiency, Obsidian tools, embeddings.
+
+### docs/v2_done/ (архив)
+Реализованные фичи, завершённые миграции, закрытые issues.
 
 ---
 

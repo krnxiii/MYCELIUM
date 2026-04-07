@@ -69,6 +69,7 @@ class LLMClient(LLMBackend):
         base_cmd = [
             "claude", "-p",
             "--output-format", "stream-json",
+            "--verbose",
             "--model",         self._s.model,
             "--max-turns",     "1",
         ]

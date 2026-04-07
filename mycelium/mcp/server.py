@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import pathlib
 import time
 from datetime import UTC, datetime
@@ -48,6 +49,9 @@ _KNOWLEDGE_DIR = pathlib.Path(__file__).resolve().parent.parent / "knowledge"
 
 _GATE_DIR.mkdir(parents=True, exist_ok=True)
 (_GATE_DIR / ".read_enabled").touch(exist_ok=True)
+# VPS/Docker: auto-enable write (trusted single-user environment)
+if os.environ.get("MYCELIUM_MCP__TRANSPORT") == "streamable-http":
+    (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
 
 
 def _gate(mode: str) -> dict | None:
@@ -66,6 +70,43 @@ _settings: Settings | None = None
 
 _bg_tasks: dict[str, asyncio.Task] = {}   # signal_uuid → Task
 _bg_sem = asyncio.Semaphore(2)             # max concurrent extractions
+
+# ── Debounced vault sync ─────────────────────────────────────────
+
+_VAULT_SYNC_DELAY = 5.0  # seconds after last mutation
+_sync_handle: asyncio.TimerHandle | None = None
+
+
+def _schedule_vault_sync() -> None:
+    """Schedule obsidian_sync after a debounce delay. Resets on each call."""
+    global _sync_handle
+    loop = asyncio.get_event_loop()
+    if _sync_handle is not None:
+        _sync_handle.cancel()
+    _sync_handle = loop.call_later(_VAULT_SYNC_DELAY, _fire_vault_sync)
+
+
+def _fire_vault_sync() -> None:
+    """Create background task for vault sync."""
+    global _sync_handle
+    _sync_handle = None
+    asyncio.create_task(_run_vault_sync())
+
+
+async def _run_vault_sync() -> None:
+    """Run obsidian_sync in background. Errors are logged, never raised."""
+    try:
+        my, settings = await _get()
+        if not settings.obsidian.enabled:
+            return
+        from mycelium.obsidian.sync import sync
+        from mycelium.vault.storage import VaultStorage
+        vault  = VaultStorage(settings.vault)
+        result = await sync(my._c.driver, vault, settings.obsidian)
+        log.info("vault_auto_sync", updated=result.updated,
+                 companions=result.companions, skipped=result.skipped)
+    except Exception as e:
+        log.warning("vault_auto_sync_failed", error=str(e))
 
 
 async def _get() -> tuple[Mycelium, Settings]:
@@ -180,6 +221,7 @@ async def _start_bg_extraction(
                     source_desc=source_desc,
                     extraction_focus=extraction_focus,
                 )
+                _schedule_vault_sync()
             except Exception as e:
                 log.warning("bg_extraction_failed", signal=sig.uuid, error=str(e))
                 await my._c.driver.execute_query(
@@ -463,17 +505,20 @@ async def impl_list_neurons(
     base  = ("WHERE e.expired_at IS NULL "
              "AND (e.expires_at IS NULL OR e.expires_at > datetime())")
     where = f"{base} AND e.neuron_type = $type" if neuron_type else base
-    order = {
+    _ORDER_ALLOWLIST = {
         "freshness": "e.freshness DESC", "confidence": "e.importance DESC",
         "name": "e.name ASC", "weight": "ew DESC",
-    }.get(sort_by, "e.freshness DESC")
+    }
+    if sort_by not in _ORDER_ALLOWLIST:
+        sort_by = "freshness"
+    order = _ORDER_ALLOWLIST[sort_by]
 
     return await my._c.driver.execute_query(
         f"MATCH (e:Neuron) {where} "
         "WITH e, coalesce(e.importance, e.confidence) AS imp, e.decay_rate AS dr, "
         "  duration.between(e.freshness, datetime()).days AS days "
         "WITH e, imp * exp(-dr * days) AS ew, imp "
-        f"RETURN e.uuid AS uuid, e.name AS name, e.neuron_type AS type, "
+        "RETURN e.uuid AS uuid, e.name AS name, e.neuron_type AS type, "
         "  imp AS importance, e.confirmations AS confirmations, "
         "  coalesce(e.origin, 'raw') AS origin, "
         f"  round(ew * 10000) / 10000 AS weight ORDER BY {order} LIMIT $limit",
@@ -1290,9 +1335,11 @@ async def add_signal(
         async_mode: If true, return immediately with signal_uuid. Extraction runs in background. Poll get_signal(uuid) for status.
     """
     if g := _gate("write"): return g
-    return await impl_add_signal(
+    result = await impl_add_signal(
         content, name, source_type, source_desc, extraction_focus, async_mode,
     )
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1323,9 +1370,11 @@ async def ingest_direct(
     """
     if g := _gate("write"): return g
     try:
-        return await impl_ingest_direct(
+        result = await impl_ingest_direct(
             content, neurons, synapses, name, source_type, source_desc,
         )
+        _schedule_vault_sync()
+        return result
     except json.JSONDecodeError as e:
         return {"error": f"Invalid JSON: {e}"}
     except Exception as e:
@@ -1350,7 +1399,9 @@ async def ingest_batch(items: str) -> dict[str, Any]:
     """
     if g := _gate("write"): return g
     try:
-        return await impl_ingest_batch(items)
+        result = await impl_ingest_batch(items)
+        _schedule_vault_sync()
+        return result
     except json.JSONDecodeError as e:
         return {"error": f"Invalid JSON: {e}"}
     except Exception as e:
@@ -1376,7 +1427,9 @@ async def add_neuron(
         attributes: JSON string with extra attributes (MCP limitation — no dict)
     """
     if g := _gate("write"): return g
-    return await impl_add_neuron(name, neuron_type, confidence, summary, attributes)
+    result = await impl_add_neuron(name, neuron_type, confidence, summary, attributes)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1441,7 +1494,9 @@ async def add_synapse(
         confidence: Confidence score 0.0-1.0
     """
     if g := _gate("write"): return g
-    return await impl_add_synapse(source_uuid, target_uuid, fact, relation, confidence)
+    result = await impl_add_synapse(source_uuid, target_uuid, fact, relation, confidence)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1452,7 +1507,9 @@ async def delete_synapse(uuid: str) -> dict[str, Any]:
         uuid: Synapse UUID to expire
     """
     if g := _gate("write"): return g
-    return await impl_delete_synapse(uuid)
+    result = await impl_delete_synapse(uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1471,7 +1528,9 @@ async def update_neuron(
         importance: Stable significance 0-1 (negative = no change)
     """
     if g := _gate("write"): return g
-    return await impl_update_neuron(uuid, name, neuron_type, confidence, importance)
+    result = await impl_update_neuron(uuid, name, neuron_type, confidence, importance)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1494,7 +1553,9 @@ async def re_extract(signal_uuid: str) -> dict[str, Any]:
         signal_uuid: UUID of the signal to re-process
     """
     if g := _gate("write"): return g
-    return await impl_re_extract(signal_uuid)
+    result = await impl_re_extract(signal_uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1534,7 +1595,9 @@ async def set_owner(name: str) -> dict[str, Any]:
         name: Owner's real name
     """
     if g := _gate("write"): return g
-    return await impl_set_owner(name)
+    result = await impl_set_owner(name)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1556,7 +1619,9 @@ async def rethink_neuron(uuid: str) -> dict[str, Any]:
         uuid: Neuron UUID to rethink
     """
     if g := _gate("write"): return g
-    return await impl_rethink_neuron(uuid)
+    result = await impl_rethink_neuron(uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1568,7 +1633,9 @@ async def delete_neuron(uuid: str) -> dict[str, Any]:
         uuid: Neuron UUID to expire
     """
     if g := _gate("write"): return g
-    return await impl_delete_neuron(uuid)
+    result = await impl_delete_neuron(uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1582,7 +1649,9 @@ async def merge_neurons(
         secondary_uuid: UUID of the neuron to merge into primary and delete
     """
     if g := _gate("write"): return g
-    return await impl_merge_neurons(primary_uuid, secondary_uuid)
+    result = await impl_merge_neurons(primary_uuid, secondary_uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1596,7 +1665,9 @@ async def add_mention(
         neuron_uuid: UUID of the neuron to link
     """
     if g := _gate("write"): return g
-    return await impl_add_mention(signal_uuid, neuron_uuid)
+    result = await impl_add_mention(signal_uuid, neuron_uuid)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -1866,7 +1937,9 @@ async def track(
         date:   Date override YYYY-MM-DD (default: today).
     """
     if g := _gate("write"): return g
-    return await impl_track(input, domain, date)
+    result = await impl_track(input, domain, date)
+    _schedule_vault_sync()
+    return result
 
 
 @mcp.tool
@@ -2039,7 +2112,9 @@ async def import_subgraph(data: dict[str, Any]) -> dict[str, Any]:
     Re-embeds vectors if embedding model differs from export."""
     if err := _gate("write"):
         return err
-    return await impl_import_subgraph(data)
+    result = await impl_import_subgraph(data)
+    _schedule_vault_sync()
+    return result
 
 
 # ── Vault ─────────────────────────────────────────────────────────
@@ -2078,6 +2153,7 @@ async def vault_store(file_path: str, category: str = "") -> dict[str, Any]:
         __import__("hashlib").sha256(p.read_bytes()).hexdigest()
     )
     entry = vault.store(p, category=category, name=store_name)
+    _schedule_vault_sync()
     return {
         "relative_path": entry.relative_path,
         "content_hash":  entry.content_hash,
@@ -2118,6 +2194,7 @@ async def vault_link(
             original_ext=original_ext,
         )
 
+    _schedule_vault_sync()
     return {"status": "linked", "relative_path": relative_path}
 
 

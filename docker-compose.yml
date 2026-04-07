@@ -14,7 +14,7 @@ services:
       NEO4J_server_memory_heap_max__size: "512m"
       NEO4J_server_memory_pagecache_size: "256m"
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_dbms_security_auth__minimum__password__length: "4"
+      NEO4J_dbms_security_auth__minimum__password__length: "8"
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/data:/data
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/logs:/logs
@@ -29,15 +29,15 @@ services:
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
     container_name: mycelium-embeddings
-    command: --model-id BAAI/bge-m3 --port 8080
+    command: --model-id BAAI/bge-m3 --port 9632
     ports:
-      - "8090:8080"
+      - "9632:9632"
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/embeddings:/data
     profiles:
       - full
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9632/health"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -47,7 +47,7 @@ services:
     build: .
     container_name: mycelium-app
     ports:
-      - "8000:8000"
+      - "9631:9631"
     environment:
       MYCELIUM_NEO4J__URI: bolt://neo4j:7687
       MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
@@ -63,7 +63,7 @@ services:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/mcp"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9631/mcp"]
       interval: 10s
       timeout: 5s
       retries: 5
