@@ -5,7 +5,13 @@ set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-MYCELIUM_DIR="$HOME/.mycelium"
+# Resolve real user home even under sudo
+if [[ -n "${SUDO_USER:-}" ]]; then
+    _REAL_HOME="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || eval echo "~$SUDO_USER")"
+else
+    _REAL_HOME="$HOME"
+fi
+MYCELIUM_DIR="$_REAL_HOME/.mycelium"
 
 # ── Helpers ─────────────────────────────────────────────────────────
 success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
@@ -74,15 +80,15 @@ remove_mcp() {
     local removed=false
     for skill in mycelium-on mycelium-off mycelium-ingest mycelium-recall \
                  mycelium-reflect mycelium-distill mycelium-discover mycelium-domain; do
-        if [[ -d "$HOME/.claude/skills/$skill" ]]; then
-            rm -rf "$HOME/.claude/skills/$skill"
+        if [[ -d "$_REAL_HOME/.claude/skills/$skill" ]]; then
+            rm -rf "$_REAL_HOME/.claude/skills/$skill"
             removed=true
         fi
     done
     $removed && success "Skills removed" || info "No skills found"
 
     # Global CLAUDE.md rules
-    local target="$HOME/.claude/CLAUDE.md"
+    local target="$_REAL_HOME/.claude/CLAUDE.md"
     if [[ -f "$target" ]] && grep -qF "## MYCELIUM MCP Access Control" "$target"; then
         local tmp="${target}.tmp"
         awk '
@@ -101,7 +107,7 @@ remove_mcp() {
 remove_cli() {
     step "3/6" "Removing CLI wrapper"
 
-    local wrapper="$HOME/.local/bin/mycelium"
+    local wrapper="$_REAL_HOME/.local/bin/mycelium"
     if [[ -f "$wrapper" ]]; then
         rm -f "$wrapper"
         success "CLI removed"
