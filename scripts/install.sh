@@ -272,6 +272,7 @@ generate_env() {
     fi
 
     cp "$ENV_EXAMPLE" "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 
     # ── API key (scenarios 1 & 2) ──
     if [[ "$scenario" != "3" ]]; then

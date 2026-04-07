@@ -42,8 +42,9 @@ log = structlog.get_logger()
 router = Router()
 
 _EMOJI_SPEECH = "\U0001f4ac"  # 💬
-_UPLOAD_DIR   = Path("/tmp/tg-uploads")
-_TEXT_EXTS    = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".log"})
+_UPLOAD_DIR       = Path("/tmp/tg-uploads")
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+_TEXT_EXTS        = frozenset({".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".js", ".ts", ".log"})
 
 # ── Media/forward batching (debounce for albums & multi-forward) ──
 _BATCH_DELAY = 1.5  # seconds to wait for more items
@@ -422,8 +423,12 @@ async def _save_photo(message: Message) -> Path | None:
     ext      = Path(file.file_path).suffix or ".jpg"
     filename = f"{message.chat.id}_{message.message_id}{ext}"
     path     = _UPLOAD_DIR / filename
-    path.write_bytes(buf.read())
-    log.info("file.saved_photo", path=str(path), size=path.stat().st_size,
+    data     = buf.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None
+    path.write_bytes(data)
+    log.info("file.saved_photo", path=str(path), size=len(data),
              chat_id=message.chat.id)
     return path
 
@@ -443,12 +448,16 @@ async def _save_document(message: Message) -> tuple[Path | None, str]:
         return None, ""
 
     _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    orig_name = doc.file_name or f"doc_{message.message_id}"
+    orig_name = Path(doc.file_name or f"doc_{message.message_id}").name  # strip path traversal
     filename  = f"{message.chat.id}_{orig_name}"
     path      = _UPLOAD_DIR / filename
-    path.write_bytes(buf.read())
+    data      = buf.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None, ""
+    path.write_bytes(data)
     log.info("file.saved_document", path=str(path), filename=orig_name,
-             size=path.stat().st_size, chat_id=message.chat.id)
+             size=len(data), chat_id=message.chat.id)
 
     # Read text content for text-based files
     content = ""

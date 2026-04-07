@@ -279,6 +279,7 @@ configure_env() {
     else
         cp "$ENV_EXAMPLE" "$ENV_FILE"
     fi
+    chmod 600 "$ENV_FILE"
 
     # ── Auth token ──
     local prev_token

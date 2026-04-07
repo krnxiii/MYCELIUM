@@ -124,7 +124,9 @@ class VaultStorage:
         if not meta:
             return None
 
-        abs_path = self._root / relative_path
+        abs_path = (self._root / relative_path).resolve()
+        if not str(abs_path).startswith(str(self._root.resolve())):
+            return None  # path traversal
         if not abs_path.exists():
             return None
 
@@ -183,7 +185,9 @@ class VaultStorage:
         Use for files manually placed in vault by the user.
         Returns None if file doesn't exist.
         """
-        abs_path = self._root / relative_path
+        abs_path = (self._root / relative_path).resolve()
+        if not str(abs_path).startswith(str(self._root.resolve())):
+            return None  # path traversal
         if not abs_path.exists():
             return None
 
