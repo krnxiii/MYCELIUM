@@ -362,6 +362,22 @@ configure_env() {
         warn "Telegram skipped — add MYCELIUM_TELEGRAM__BOT_TOKEN to .env later"
     fi
 
+    # ── Graph Viewer (Sigma.js) ──
+    sep
+    printf "  ${BOLD}Graph viewer${NC} ${DIM}(interactive graph in browser)${NC}\n"
+    local render_choice
+    render_choice="$(ask "Enable graph viewer?" "y")"
+    case "$render_choice" in
+        [yY]*)
+            set_env_val "MYCELIUM_RENDER__ENABLED" "true"
+            success "Graph viewer enabled (port 9633)"
+            ;;
+        *)
+            set_env_val "MYCELIUM_RENDER__ENABLED" "false"
+            info "Graph viewer disabled"
+            ;;
+    esac
+
     # Store flags for compose profiles
     printf 'MYCELIUM_VPS_EMB_MODE=%s\n' "$emb_mode" >> "$ENV_FILE"
     [[ -n "$tg_token" ]] && printf 'MYCELIUM_VPS_TELEGRAM=1\n' >> "$ENV_FILE"
@@ -466,6 +482,9 @@ show_summary() {
     _row "MCP         http://${ts_addr}:9631/mcp"
     _row "Neo4j       http://${ts_addr}:7474"
     _row "Syncthing   http://${ts_addr}:8384"
+    local render_enabled
+    render_enabled="$(grep '^MYCELIUM_RENDER__ENABLED=' "$ENV_FILE" | cut -d= -f2 || true)"
+    [[ "$render_enabled" == "true" ]] && _row "Graph       http://${ts_addr}:9633"
     _rul "├" "┤"
     [[ -n "$ts_line" ]] && _row "$ts_line"
     _row "$token_line"
