@@ -260,9 +260,9 @@ async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
         await _step(f"\u274c build error: {html.escape(str(e))}")
         return
 
-    # ── Step 3: restart ──
-    # Fire-and-forget: Popen sends API calls to Docker daemon which
-    # completes the operation even after this container is killed.
+    # ── Step 3: restart via helper container ──
+    # Can't restart from inside telegram-bot — Docker kills ALL processes
+    # in the container's cgroup. Run a separate detached container instead.
     build_time = _elapsed()
     await _step(
         f"\u2705 git pull \u2714\n"
@@ -270,13 +270,32 @@ async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
         f"\U0001f504 restarting \u2014 back in ~10s"
     )
     await asyncio.sleep(0.5)  # let message arrive
-    _sp.Popen(
-        [*compose, "up", "-d"],
-        cwd=project_dir,
-        stdout=_sp.DEVNULL,
-        stderr=_sp.DEVNULL,
-        start_new_session=True,
-    )
+
+    def _restart_via_helper() -> None:
+        # Resolve host project path from our container's bind mount
+        r = _sp.run(
+            ["docker", "inspect", "mycelium-telegram", "--format",
+             '{{range .Mounts}}{{if eq .Destination "/project"}}{{.Source}}{{end}}{{end}}'],
+            capture_output=True, text=True, timeout=5,
+        )
+        host_dir = r.stdout.strip() or "/root/MYCELIUM"
+        # Remove stale helper if exists
+        _sp.run(["docker", "rm", "-f", "mycelium-updater"],
+                capture_output=True, timeout=5)
+        # Launch detached helper — survives telegram-bot container death
+        _sp.run([
+            "docker", "run", "--rm", "-d",
+            "--name", "mycelium-updater",
+            "-v", "/var/run/docker.sock:/var/run/docker.sock",
+            "-v", f"{host_dir}:/project", "-w", "/project",
+            "mycelium-vps-telegram-bot",
+            "sh", "-c",
+            "sleep 2 && docker compose -f docker-compose.vps.yml"
+            " --profile telegram up -d"
+            " && docker rm -f mycelium-updater 2>/dev/null; true",
+        ], capture_output=True, timeout=10)
+
+    await loop.run_in_executor(None, _restart_via_helper)
 
 
 _INTERACTION_LEVELS = ("silent", "minimal", "balanced", "curious")
