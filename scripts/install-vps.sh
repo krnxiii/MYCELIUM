@@ -250,7 +250,12 @@ select_embeddings() {
 # ── Configure .env ──────────────────────────────────────────────────
 
 # Read existing value from .env (returns empty if not found)
-_prev() { grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+# Read existing value, strip inline comments (space+#) and whitespace.
+# Preserves # inside values like "z13#" (no space before #).
+_prev() {
+    grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- \
+        | sed 's/[[:space:]][[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' || true
+}
 
 # Mask secret for display: show first 4 chars + "..."
 _mask() { local v="$1"; [[ ${#v} -gt 4 ]] && echo "${v:0:4}..." || echo "$v"; }
