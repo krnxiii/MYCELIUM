@@ -185,8 +185,11 @@ async def cmd_domains(message: Message, dispatcher: Dispatcher) -> None:
 async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
     """Self-update: git pull + rebuild + restart. Waits for in-flight work."""
     import subprocess as _sp
+    import time as _time
 
     project_dir = Path("/project")
+    compose     = ["docker", "compose", "-f", "docker-compose.vps.yml",
+                   "--profile", "telegram"]
     if not (project_dir / "docker-compose.vps.yml").exists():
         await message.answer("Update unavailable (project dir not mounted).")
         return
@@ -194,51 +197,89 @@ async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
     # Wait for any in-flight agent work to finish
     if dispatcher.is_busy():
         await message.answer("Waiting for current operation to finish...")
-        for _ in range(120):  # max 2 minutes
+        for _ in range(120):
             await asyncio.sleep(1)
             if not dispatcher.is_busy():
                 break
         else:
             await message.answer("Timeout waiting. Updating anyway.")
 
-    await message.answer("Updating MYCELIUM...")
+    status = await message.answer("\u2699\ufe0f Updating MYCELIUM...")
 
-    def _run_update() -> str:
-        lines: list[str] = []
-        _sp.run(["git", "config", "--global", "--add",
-                 "safe.directory", "/project"],
-                capture_output=True, timeout=5)
-        r = _sp.run(
-            ["git", "pull", "--ff-only", "origin", "dev"],
-            cwd=project_dir, capture_output=True, text=True, timeout=60,
-        )
-        lines.append(r.stdout.strip() or r.stderr.strip())
-        if r.returncode != 0:
-            return "git pull failed:\n" + "\n".join(lines)
-        r = _sp.run(
-            ["docker", "compose", "-f", "docker-compose.vps.yml",
-             "--profile", "telegram", "build", "--quiet"],
-            cwd=project_dir, capture_output=True, text=True, timeout=600,
-        )
-        if r.returncode != 0:
-            lines.append("Build failed: " + r.stderr[:300])
-            return "\n".join(lines)
-        lines.append("Build OK")
-        r = _sp.run(
-            ["docker", "compose", "-f", "docker-compose.vps.yml",
-             "--profile", "telegram", "up", "-d"],
-            cwd=project_dir, capture_output=True, text=True, timeout=120,
-        )
-        lines.append(r.stdout.strip() or r.stderr.strip())
-        return "\n".join(lines)
+    async def _step(text: str) -> None:
+        with contextlib.suppress(Exception):
+            await status.edit_text(text)
 
+    loop = asyncio.get_event_loop()
+    t0   = _time.monotonic()
+
+    def _elapsed() -> str:
+        return f"{_time.monotonic() - t0:.0f}s"
+
+    # ── Step 1: git pull ──
     try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _run_update)
-        await message.answer(f"<pre>{html.escape(result[:3000])}</pre>",
-                             parse_mode=ParseMode.HTML)
+        def _git_pull() -> _sp.CompletedProcess[str]:
+            _sp.run(["git", "config", "--global", "--add",
+                     "safe.directory", "/project"],
+                    capture_output=True, timeout=5)
+            return _sp.run(
+                ["git", "pull", "--ff-only", "origin", "dev"],
+                cwd=project_dir, capture_output=True, text=True, timeout=60,
+            )
+        await _step(f"\u2699\ufe0f git pull...")
+        r = await loop.run_in_executor(None, _git_pull)
+        git_info = r.stdout.strip().split("\n")[0] or r.stderr.strip().split("\n")[0]
+        if r.returncode != 0:
+            await _step(f"\u274c git pull failed [{_elapsed()}]\n<pre>{html.escape(git_info[:500])}</pre>")
+            return
+        await _step(f"\u2699\ufe0f git pull \u2714 {html.escape(git_info[:80])}")
     except Exception as e:
-        await message.answer(f"Update error: {html.escape(str(e))}")
+        await _step(f"\u274c git pull error: {html.escape(str(e))}")
+        return
+
+    # ── Step 2: build ──
+    try:
+        def _build() -> _sp.CompletedProcess[str]:
+            return _sp.run(
+                [*compose, "build", "--quiet"],
+                cwd=project_dir, capture_output=True, text=True, timeout=600,
+            )
+        await _step(f"\u2699\ufe0f git pull \u2714\n\u2699\ufe0f building...")
+        # Update elapsed time during build
+        build_task = loop.run_in_executor(None, _build)
+        while not build_task.done():
+            await asyncio.sleep(5)
+            await _step(f"\u2699\ufe0f git pull \u2714\n\u2699\ufe0f building... \u23f1 {_elapsed()}")
+        r = await build_task
+        if r.returncode != 0:
+            err = r.stderr.strip()[:300]
+            await _step(f"\u274c build failed [{_elapsed()}]\n<pre>{html.escape(err)}</pre>")
+            return
+        await _step(f"\u2699\ufe0f git pull \u2714\n\u2699\ufe0f build \u2714 [{_elapsed()}]")
+    except Exception as e:
+        await _step(f"\u274c build error: {html.escape(str(e))}")
+        return
+
+    # ── Step 3: restart ──
+    try:
+        def _restart() -> _sp.CompletedProcess[str]:
+            return _sp.run(
+                [*compose, "up", "-d"],
+                cwd=project_dir, capture_output=True, text=True, timeout=120,
+            )
+        build_time = _elapsed()
+        await _step(f"\u2699\ufe0f git pull \u2714\n\u2699\ufe0f build \u2714 [{build_time}]\n\u2699\ufe0f restarting...")
+        r = await loop.run_in_executor(None, _restart)
+        if r.returncode != 0:
+            err = r.stderr.strip()[:300]
+            await _step(f"\u274c restart failed\n<pre>{html.escape(err)}</pre>")
+            return
+        await _step(
+            f"\u2705 MYCELIUM updated [{_elapsed()}]\n"
+            f"\u2714 git pull\n\u2714 build [{build_time}]\n\u2714 restart"
+        )
+    except Exception as e:
+        await _step(f"\u274c restart error: {html.escape(str(e))}")
 
 
 _INTERACTION_LEVELS = ("silent", "minimal", "balanced", "curious")
