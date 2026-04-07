@@ -260,12 +260,14 @@ def serve(
     # Auto-start render server if enabled
     if settings.render.enabled:
         try:
+            import signal
             import uvicorn as _uvi
             from mycelium.render.server import app as _render_app
             _rh, _rp = settings.render.host, settings.render.port
             _old = _render_alive()
             if _old:
                 _render_stop()
+            signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # auto-reap child
             child = os.fork()
             if child:
                 _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
@@ -273,8 +275,10 @@ def serve(
                 typer.echo(f"Graph viewer → http://localhost:{_rp}")
             else:
                 os.setsid()
-                import sys as _sys
-                _sys.stdout = _sys.stderr = open(os.devnull, "w")
+                devnull = open(os.devnull, "w")  # noqa: SIM115
+                os.dup2(devnull.fileno(), 1)
+                os.dup2(devnull.fileno(), 2)
+                devnull.close()
                 _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
         except ImportError:
             typer.echo("Render enabled but deps missing — skipping", err=True)

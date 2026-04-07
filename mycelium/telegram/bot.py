@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 from pathlib import Path
 
@@ -74,7 +75,12 @@ async def _flush_batch(chat_id: int) -> None:
     message, dispatcher = ref
     combined = "\n\n---\n\n".join(parts)
     log.info("batch.flush", chat_id=chat_id, count=len(parts), total_len=len(combined))
-    await _stream_dispatch(message, dispatcher, combined)
+    try:
+        await _stream_dispatch(message, dispatcher, combined)
+    except Exception as exc:
+        log.error("batch.flush_error", chat_id=chat_id, error=str(exc))
+        with contextlib.suppress(Exception):
+            await message.answer(f"Error processing batch: {exc}")
 
 
 # ── Handlers ────────────────────────────────────────────────────────
@@ -522,7 +528,8 @@ async def _stream_dispatch(
     text:       str,
 ) -> None:
     """Stream agent response with progress indicator."""
-    assert message.bot is not None
+    if not message.bot:
+        return
     async with TypingKeepAlive(message):
         progress = ProgressIndicator(message.bot, message.chat.id)
         await progress.start()

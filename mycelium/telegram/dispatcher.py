@@ -75,8 +75,7 @@ class Dispatcher:
 
     def is_busy(self) -> bool:
         """Check if agent subprocess is currently running."""
-        p = self._agent._process
-        return p is not None and p.returncode is None
+        return self._agent.is_running()
 
     def abort(self) -> bool:
         """Abort current agent process."""

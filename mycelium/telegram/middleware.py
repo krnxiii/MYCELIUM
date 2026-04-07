@@ -90,16 +90,13 @@ class ACKMiddleware(BaseMiddleware):
 
 async def _set_reaction(msg: Message, emoji: str) -> None:
     """Set emoji reaction, ignore errors (not all chats support reactions)."""
-    from contextlib import suppress
-
     from aiogram.types import ReactionTypeEmoji
-    with suppress(Exception):
+    with contextlib.suppress(Exception):
         await msg.react([ReactionTypeEmoji(emoji=emoji)])
 
 
 async def _remove_reaction(msg: Message) -> None:
-    from contextlib import suppress
-    with suppress(Exception):
+    with contextlib.suppress(Exception):
         await msg.react([])
 
 

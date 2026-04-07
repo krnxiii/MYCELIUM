@@ -98,9 +98,9 @@ class StreamingDelivery:
         if now - self._last_edit_at < EDIT_THROTTLE_SEC:
             return
 
-        # Handle overflow (>4096 chars)
+        # During streaming, truncate to limit — finalize() handles overflow
         if len(text) > MAX_MESSAGE_LEN:
-            await self._handle_overflow(text)
+            await self._edit(text[:MAX_MESSAGE_LEN])
             return
 
         await self._edit(text)

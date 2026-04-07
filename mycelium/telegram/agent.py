@@ -66,6 +66,11 @@ class AgentProcess:
         """Check if a session exists for chat_id."""
         return chat_id in self._sessions
 
+    def is_running(self) -> bool:
+        """Check if agent subprocess is currently active."""
+        p = self._process
+        return p is not None and p.returncode is None
+
     def set_context(self, context: str) -> None:
         """Inject graph context into next system prompt."""
         self._context = context
