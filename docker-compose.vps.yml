@@ -89,8 +89,6 @@ services:
       - tg_uploads:/tmp/tg-uploads
       - ~/.claude:/root/.claude
       - ~/.claude.json:/root/.claude.json
-      - /var/run/docker.sock:/var/run/docker.sock
-      - .:/project
     depends_on:
       mycelium:
         condition: service_healthy
