@@ -248,27 +248,54 @@ select_embeddings() {
 }
 
 # ── Configure .env ──────────────────────────────────────────────────
+
+# Read existing value from .env (returns empty if not found)
+_prev() { grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
+# Mask secret for display: show first 4 chars + "..."
+_mask() { local v="$1"; [[ ${#v} -gt 4 ]] && echo "${v:0:4}..." || echo "$v"; }
+
 configure_env() {
-    # Backup existing .env
+    # Backup existing .env, then merge: keep old values, add new keys from example
+    local had_env=false
     if [[ -f "$ENV_FILE" ]]; then
+        had_env=true
         local backup="$ENV_FILE.backup.$(date +%Y%m%d_%H%M%S)"
         cp "$ENV_FILE" "$backup"
         success "Existing .env backed up: $backup"
+        # Merge: start from example, overlay existing values
+        local tmp="${ENV_FILE}.merge"
+        cp "$ENV_EXAMPLE" "$tmp"
+        while IFS='=' read -r key val; do
+            [[ -z "$key" || "$key" == \#* ]] && continue
+            set_env_val "$key" "$val" "$tmp"
+        done < "$ENV_FILE"
+        mv "$tmp" "$ENV_FILE"
+    else
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
     fi
-    cp "$ENV_EXAMPLE" "$ENV_FILE"
 
     # ── Auth token ──
+    local prev_token
+    prev_token="$(_prev MYCELIUM_MCP__AUTH_TOKEN)"
     local token
-    token="$(generate_token)"
-    set_env_val "MYCELIUM_MCP__AUTH_TOKEN" "$token"
-    success "Auth token generated"
+    if [[ -n "$prev_token" ]]; then
+        token="$prev_token"
+        success "Auth token preserved"
+    else
+        token="$(generate_token)"
+        set_env_val "MYCELIUM_MCP__AUTH_TOKEN" "$token"
+        success "Auth token generated"
+    fi
     printf "\n  ${DIM}Save this — you'll need it on your laptop:${NC}\n"
     printf "  ${BOLD}${CYAN}%s${NC}\n" "$token"
 
     # ── Neo4j password ──
     sep
+    local prev_neo4j
+    prev_neo4j="$(_prev MYCELIUM_NEO4J__PASSWORD)"
     local neo4j_pass
-    neo4j_pass="$(ask_secret "Neo4j password" "password")"
+    neo4j_pass="$(ask_secret "Neo4j password" "${prev_neo4j:-password}")"
     [[ "${#neo4j_pass}" -lt 4 ]] && neo4j_pass="password"
     set_env_val "MYCELIUM_NEO4J__PASSWORD" "$neo4j_pass"
 
@@ -277,8 +304,11 @@ configure_env() {
     local emb_mode
     emb_mode="$(select_embeddings)"
     if [[ "$emb_mode" == "1" ]]; then
-        local api_key
-        api_key="$(ask_secret "DeepInfra API key")"
+        local prev_di_key api_key
+        prev_di_key="$(_prev MYCELIUM_SEMANTIC__API_KEY)"
+        api_key="$(ask_secret "DeepInfra API key" "${prev_di_key:+$(_mask "$prev_di_key")}")"
+        # If user accepted the masked default, use the real previous key
+        [[ "$api_key" == "$(_mask "$prev_di_key")" ]] && api_key="$prev_di_key"
         hint "Free key: https://deepinfra.com/dash/api_keys"
         if [[ -z "$api_key" ]]; then
             warn "No key — set MYCELIUM_SEMANTIC__API_KEY in .env later"
@@ -292,8 +322,9 @@ configure_env() {
 
     # ── Owner ──
     sep
-    local owner_name
-    owner_name="$(ask "Your name" "")"
+    local prev_owner owner_name
+    prev_owner="$(_prev MYCELIUM_OWNER__NAME)"
+    owner_name="$(ask "Your name" "${prev_owner:-}")"
     hint "Optional. Used for graph ownership metadata."
     [[ -n "$owner_name" ]] && set_env_val "MYCELIUM_OWNER__NAME" "$owner_name"
 
@@ -320,14 +351,17 @@ configure_env() {
     # ── Telegram block (bot + chat_id + STT grouped) ──
     sep
     printf "  ${BCYAN}Telegram${NC}  ${DIM}mobile access to the graph${NC}\n"
-    local tg_token
-    tg_token="$(ask_secret "Bot token (or empty to skip)")"
+    local prev_tg_token tg_token
+    prev_tg_token="$(_prev MYCELIUM_TELEGRAM__BOT_TOKEN)"
+    tg_token="$(ask_secret "Bot token (or empty to skip)" "${prev_tg_token:+$(_mask "$prev_tg_token")}")"
+    [[ "$tg_token" == "$(_mask "$prev_tg_token")" ]] && tg_token="$prev_tg_token"
     hint "Create via @BotFather -> /newbot"
     local stt_choice=""
     if [[ -n "$tg_token" ]]; then
         set_env_val "MYCELIUM_TELEGRAM__BOT_TOKEN" "$tg_token"
-        local tg_chat_id
-        tg_chat_id="$(ask "Your chat_id" "0")"
+        local prev_chat_id tg_chat_id
+        prev_chat_id="$(_prev MYCELIUM_TELEGRAM__OWNER_CHAT_ID)"
+        tg_chat_id="$(ask "Your chat_id" "${prev_chat_id:-0}")"
         hint "Send /start to @userinfobot to find it"
         set_env_val "MYCELIUM_TELEGRAM__OWNER_CHAT_ID" "$tg_chat_id"
 
@@ -340,8 +374,10 @@ configure_env() {
         case "$stt_choice" in
             1)
                 set_env_val "MYCELIUM_TELEGRAM__STT_PROVIDER" "deepgram"
-                local stt_key
-                stt_key="$(ask_secret "Deepgram API key")"
+                local prev_stt_key stt_key
+                prev_stt_key="$(_prev MYCELIUM_TELEGRAM__STT_API_KEY)"
+                stt_key="$(ask_secret "Deepgram API key" "${prev_stt_key:+$(_mask "$prev_stt_key")}")"
+                [[ "$stt_key" == "$(_mask "$prev_stt_key")" ]] && stt_key="$prev_stt_key"
                 hint "https://console.deepgram.com"
                 if [[ -n "$stt_key" ]]; then
                     set_env_val "MYCELIUM_TELEGRAM__STT_API_KEY" "$stt_key"
