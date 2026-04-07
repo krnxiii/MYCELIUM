@@ -143,6 +143,13 @@ collect_vps_info() {
     printf "\n"
     SYNCTHING_DEVICE_ID="$(ask "Sync ID (empty to skip vault sync)" "")"
     hint "'Sync ID' from the VPS installer summary"
+
+    SYNCTHING_API_KEY=""
+    if [[ -n "$SYNCTHING_DEVICE_ID" ]]; then
+        printf "\n"
+        SYNCTHING_API_KEY="$(ask_secret "Sync Key")"
+        hint "'Sync Key' from the VPS installer summary"
+    fi
 }
 
 # ── Step 3: Ensure Tailscale + Test Connectivity ─────────────────────
@@ -441,43 +448,23 @@ sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
         && success "Vault folder configured (local)" \
         || { warn "Failed to add vault folder locally"; _show_manual_syncthing_instructions; return; }
 
-    # ── Configure VPS side via Syncthing HTTP API ──
+    # ── Configure VPS side via direct HTTP (through Tailscale) ──
+
+    if [[ -z "$SYNCTHING_API_KEY" ]]; then
+        warn "No Sync Key — VPS side needs manual pairing"
+        _show_manual_syncthing_instructions
+        return
+    fi
 
     hint "Configuring VPS Syncthing..."
 
-    # Test SSH connectivity first (non-interactive, no password, short timeout)
-    if ! ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-            -o BatchMode=yes -o PasswordAuthentication=no \
-            "$VPS_HOST" true 2>/dev/null; then
-        warn "SSH to VPS not available (no key configured)"
-        hint "VPS Syncthing needs manual pairing or set up SSH key:"
-        hint "  ssh-copy-id $VPS_HOST"
-        _show_manual_syncthing_instructions
-        return
-    fi
+    local vps_st_api="http://$VPS_HOST:8384/rest"
+    local vps_auth="X-API-Key: $SYNCTHING_API_KEY"
 
-    # Get VPS Syncthing API key via SSH
-    local vps_api_key=""
-    vps_api_key="$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$VPS_HOST" \
-        'sed -n "s/.*<apikey>\(.*\)<\/apikey>.*/\1/p" ~/.mycelium/syncthing/config/config.xml 2>/dev/null' 2>/dev/null || true)"
-
-    if [[ -z "$vps_api_key" ]]; then
-        warn "Cannot get VPS Syncthing API key via SSH"
-        _show_manual_syncthing_instructions
-        return
-    fi
-
-    # Use SSH tunnel for Syncthing API (port 8384 may not be exposed)
-    local tunnel_port=18384
-    ssh -o ConnectTimeout=5 -o BatchMode=yes -fNL "${tunnel_port}:localhost:8384" "$VPS_HOST" 2>/dev/null
-    local vps_st_api="http://localhost:${tunnel_port}/rest"
-    local vps_auth="X-API-Key: $vps_api_key"
-
-    # Verify tunnel works
-    if ! curl -sf -o /dev/null -H "$vps_auth" "$vps_st_api/system/status" 2>/dev/null; then
-        warn "Cannot reach VPS Syncthing via SSH tunnel"
-        # Kill tunnel
-        kill "$(lsof -ti tcp:$tunnel_port 2>/dev/null)" 2>/dev/null || true
+    # Verify VPS Syncthing is reachable
+    if ! curl -sf -o /dev/null --connect-timeout 5 -H "$vps_auth" "$vps_st_api/system/status" 2>/dev/null; then
+        warn "Cannot reach VPS Syncthing at $VPS_HOST:8384"
+        hint "Check that Syncthing container is running on VPS"
         _show_manual_syncthing_instructions
         return
     fi
@@ -501,10 +488,7 @@ sys.exit(0 if '$SYNCTHING_DEVICE_ID' in ids else 1)
         "$vps_st_api/config/folders" \
         -d "{\"id\": \"mycelium-vault\", \"label\": \"MYCELIUM Vault\", \"path\": \"/var/syncthing/vault\", \"type\": \"sendreceive\", \"rescanIntervalS\": 10, \"fsWatcherEnabled\": true, \"devices\": [{\"deviceID\": \"$vps_own_id\"}, {\"deviceID\": \"$local_id\"}]}" >/dev/null 2>&1 \
         && success "Vault folder configured (VPS)" \
-        || { warn "Failed to configure VPS vault folder"; kill "$(lsof -ti tcp:$tunnel_port 2>/dev/null)" 2>/dev/null || true; _show_manual_syncthing_instructions; return; }
-
-    # Close SSH tunnel
-    kill "$(lsof -ti tcp:$tunnel_port 2>/dev/null)" 2>/dev/null || true
+        || { warn "Failed to configure VPS vault folder"; _show_manual_syncthing_instructions; return; }
 
     success "Vault sync configured — both sides paired"
 }

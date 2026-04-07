@@ -445,12 +445,14 @@ show_summary() {
     local token_line="Token       $token"
     local sync_line=""
     [[ -n "$st_id" ]] && sync_line="Sync ID     $st_id"
+    local sync_key_line=""
+    [[ -n "$st_api_key" ]] && sync_key_line="Sync Key    $st_api_key"
     local ts_line=""
     [[ -n "$ts_ip" ]] && ts_line="Tailscale   ${ts_ip}${ts_host:+  ($ts_host)}"
     local mcp_line="MCP         http://${ts_addr}:9631/mcp"
 
     local W=44
-    for _l in "$mcp_line" "$token_line" "$sync_line" "$ts_line"; do
+    for _l in "$mcp_line" "$token_line" "$sync_line" "$sync_key_line" "$ts_line"; do
         (( ${#_l} > W )) && W=${#_l}
     done
 
@@ -468,6 +470,7 @@ show_summary() {
     _rul "├" "┤"
     _row "$token_line"
     [[ -n "$st_id" ]] && _row "$sync_line"
+    [[ -n "$st_api_key" ]] && _row "$sync_key_line"
     _rul "└" "┘"
 
     printf '\n'
