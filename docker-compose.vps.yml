@@ -19,7 +19,7 @@ services:
       NEO4J_server_memory_heap_max__size: "512m"
       NEO4J_server_memory_pagecache_size: "256m"
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_dbms_security_auth__minimum__password__length: "8"
+      NEO4J_dbms_security_auth__minimum__password__length: "1"
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/data:/data
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/logs:/logs

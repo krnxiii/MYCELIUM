@@ -30,6 +30,8 @@ Like fungal mycelium threading trees together through soil — sharing nutrients
 - **File similarity** — embedding-based links between vault files, visible in Obsidian graph
 - **Adaptive domains** — teach the system how to process finances, reading notes, or any knowledge area with custom blueprints
 - **Agent workspace** — persistent `_AGENT/` directory with auto-generated graph context, curated memory, and daily logs
+- **Telegram bot** — full graph interface from your phone: text, voice, photos, documents, forwards. Fast commands + AI agent mode
+- **VPS deployment** — always-on graph on a remote server with Tailscale VPN, Syncthing vault sync, and Telegram bot
 - **Local-first sovereignty** — your machine, your data, your Neo4j. No cloud lock-in.
 
 ---
@@ -42,6 +44,7 @@ Like fungal mycelium threading trees together through soil — sharing nutrients
 - [Skills](#skills-claude-code)
 - [MCP Tools](#mcp-tools)
 - [Domain blueprints](#domain-blueprints)
+- [Telegram Bot](#telegram-bot)
 - [Visualization](#visualization)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -89,13 +92,14 @@ bash scripts/install.sh   # interactive: picks scenario, configures .env, instal
 
 To remove everything later: `bash scripts/uninstall.sh`
 
-The installer guides you through 3 scenarios:
+The installer guides you through 4 scenarios:
 
 | Scenario | Embeddings | Best for |
 |----------|------------|----------|
 | **1. Local dev** (`make quickstart`) | DeepInfra API | Development, hacking (MCP via stdio) |
 | **2. Docker + API** (`make quickstart-app`) | DeepInfra API | Deploy without local Python (MCP via HTTP) |
 | **3. Full Docker** (`make quickstart-docker`) | Local BGE-M3 (~2 GB) | Air-gapped, no external APIs (MCP via HTTP) |
+| **4. VPS** (`make quickstart-vps`) | API or local | Always-on graph, Telegram bot, vault sync |
 
 Or manually (scenario 1): `cp .env.example .env && make quickstart`
 
@@ -345,6 +349,20 @@ Key variables:
 
 ---
 
+## Telegram Bot
+
+Full graph interface via Telegram — text, voice messages, photos, documents, forwards.
+
+**Two modes:**
+- **Fast mode** — instant commands without AI: `/capture`, `/search`, `/status`, `/today`, `/neurons`, `/domains`, `/abort`, `/level`
+- **Full mode** — free text goes to the same AI agent as Claude Code, with access to all 33 MCP tools
+
+**Input types:** text, voice (Whisper local or Deepgram), photos, documents (album batching), forwarded messages with source attribution.
+
+**Setup:** create a bot via `@BotFather`, add the token to `.env` (`MYCELIUM_TELEGRAM__BOT_TOKEN`). VPS scenario configures this automatically.
+
+---
+
 ## Makefile
 
 | Target | Description |
@@ -352,6 +370,8 @@ Key variables:
 | `make quickstart` | Full local setup (Neo4j + deps + indices + MCP) |
 | `make quickstart-app` | Docker setup with API embeddings |
 | `make quickstart-docker` | Full Docker setup with local embeddings |
+| `make quickstart-vps` | VPS deployment (Neo4j + MCP + Telegram + Syncthing + Tailscale) |
+| `make update` | Pull latest code, rebuild, restart services |
 | `make up` / `make down` | Start / stop Neo4j |
 | `make reset` | Wipe Neo4j data and restart |
 | `make uninstall` | Remove everything |
