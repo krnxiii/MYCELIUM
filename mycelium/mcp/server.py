@@ -2121,13 +2121,24 @@ async def import_subgraph(data: dict[str, Any]) -> dict[str, Any]:
 
 
 @mcp.tool
-async def vault_store(file_path: str, category: str = "") -> dict[str, Any]:
+async def vault_store(
+    file_path:    str = "",
+    file_content: str = "",
+    file_name:    str = "",
+    category:     str = "",
+) -> dict[str, Any]:
     """Store file in vault. Step 1 of 3: vault_store → ingest_direct → vault_link.
 
     Call BEFORE extraction. Returns relative_path for source_desc and vault_link.
 
+    Two modes:
+    - **Local:**  file_path (absolute path on server filesystem)
+    - **Remote:** file_content (base64-encoded bytes) + file_name
+
     Args:
-        file_path: Absolute path to file on disk
+        file_path: Absolute path to file on disk (local mode)
+        file_content: Base64-encoded file bytes (remote mode)
+        file_name: Original filename including extension (remote mode)
         category: Override category (default: auto from MIME type)
 
     Returns:
@@ -2135,24 +2146,44 @@ async def vault_store(file_path: str, category: str = "") -> dict[str, Any]:
     """
     if err := _gate("write"):
         return err
+    from base64 import b64decode
     from mycelium.vault.storage import VaultStorage
     _, settings = await _get()
     vault = VaultStorage(settings.vault)
-    p = pathlib.Path(file_path).expanduser()
-    if not p.exists():
-        return {"error": f"File not found: {file_path}"}
+
+    # Resolve source: local path or remote content
+    if file_content and file_name:
+        try:
+            data = b64decode(file_content)
+        except Exception:
+            return {"error": "Invalid base64 in file_content"}
+        suffix = pathlib.PurePosixPath(file_name).suffix
+        stem   = pathlib.PurePosixPath(file_name).stem
+    elif file_path:
+        p = pathlib.Path(file_path).expanduser()
+        if not p.exists():
+            return {"error": f"File not found: {file_path}"}
+        data   = p.read_bytes()
+        suffix = p.suffix
+        stem   = p.stem
+    else:
+        return {"error": "Provide file_path or (file_content + file_name)"}
 
     # .txt → .md for Obsidian
     store_name   = ""
     original_ext = ""
-    if settings.obsidian.enabled and p.suffix == ".txt":
-        store_name   = p.stem + ".md"
+    if settings.obsidian.enabled and suffix == ".txt":
+        store_name   = stem + ".md"
         original_ext = "txt"
 
     existing = vault.find_by_hash(
-        __import__("hashlib").sha256(p.read_bytes()).hexdigest()
+        __import__("hashlib").sha256(data).hexdigest()
     )
-    entry = vault.store(p, category=category, name=store_name)
+    entry = vault.store(
+        data if file_content else pathlib.Path(file_path).expanduser(),
+        category=category,
+        name=store_name or (file_name if file_content else ""),
+    )
     _schedule_vault_sync()
     return {
         "relative_path": entry.relative_path,
