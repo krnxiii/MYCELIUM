@@ -260,26 +260,22 @@ async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
         await _step(f"\u274c build error: {html.escape(str(e))}")
         return
 
-    # ── Step 3: restart ──
+    # ── Step 3: restart (bot kills itself here — send final message first) ──
+    build_time = _elapsed()
+    await _step(
+        f"\u2705 git pull \u2714\n"
+        f"\u2705 build \u2714 [{build_time}]\n"
+        f"\U0001f504 restarting \u2014 back in ~10s"
+    )
     try:
         def _restart() -> _sp.CompletedProcess[str]:
             return _sp.run(
                 [*compose, "up", "-d"],
                 cwd=project_dir, capture_output=True, text=True, timeout=120,
             )
-        build_time = _elapsed()
-        await _step(f"\u2699\ufe0f git pull \u2714\n\u2699\ufe0f build \u2714 [{build_time}]\n\u2699\ufe0f restarting...")
-        r = await loop.run_in_executor(None, _restart)
-        if r.returncode != 0:
-            err = r.stderr.strip()[:300]
-            await _step(f"\u274c restart failed\n<pre>{html.escape(err)}</pre>")
-            return
-        await _step(
-            f"\u2705 MYCELIUM updated [{_elapsed()}]\n"
-            f"\u2714 git pull\n\u2714 build [{build_time}]\n\u2714 restart"
-        )
-    except Exception as e:
-        await _step(f"\u274c restart error: {html.escape(str(e))}")
+        await loop.run_in_executor(None, _restart)
+    except Exception:
+        pass  # bot container gets killed — this is expected
 
 
 _INTERACTION_LEVELS = ("silent", "minimal", "balanced", "curious")
