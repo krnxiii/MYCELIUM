@@ -9,6 +9,9 @@ services:
   neo4j:
     image: neo4j:5.26-community
     container_name: mycelium-neo4j
+    ports:
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt protocol
     environment:
       NEO4J_AUTH: ${MYCELIUM_NEO4J__USER:-neo4j}/${MYCELIUM_NEO4J__PASSWORD:-password}
       NEO4J_PLUGINS: '["apoc"]'

@@ -240,7 +240,8 @@ def serve(
 ) -> None:
     """Start MCP server."""
     from mycelium.config import load_settings
-    cfg = load_settings().mcp
+    settings  = load_settings()
+    cfg       = settings.mcp
     transport = transport or cfg.transport
     host      = host or cfg.host
     port      = port or cfg.port
@@ -256,6 +257,28 @@ def serve(
         mcp_server.auth = StaticTokenVerifier(
             tokens={auth_token: {"client_id": "mycelium", "scopes": ["read", "write"]}},
         )
+    # Auto-start render server if enabled
+    if settings.render.enabled:
+        try:
+            import uvicorn as _uvi
+            from mycelium.render.server import app as _render_app
+            _rh, _rp = settings.render.host, settings.render.port
+            _old = _render_alive()
+            if _old:
+                _render_stop()
+            child = os.fork()
+            if child:
+                _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
+                _RENDER_PID.write_text(str(child))
+                typer.echo(f"Graph viewer → http://localhost:{_rp}")
+            else:
+                os.setsid()
+                import sys as _sys
+                _sys.stdout = _sys.stderr = open(os.devnull, "w")
+                _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
+        except ImportError:
+            typer.echo("Render enabled but deps missing — skipping", err=True)
+
     if transport == "stdio":
         mcp_server.run()
     else:
