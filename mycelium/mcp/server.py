@@ -126,6 +126,8 @@ async def _get() -> tuple[Mycelium, Settings]:
         llm      = make_llm_client(_settings.llm),
     )
     _my = Mycelium(clients, _settings)
+    # Ensure schema (indexes, constraints) — idempotent, safe on every start
+    await driver.build_indices()
     # R6.2: mark zombie "extracting" signals as failed on restart
     await driver.execute_query(
         "MATCH (s:Signal) WHERE s.status = 'extracting' "
