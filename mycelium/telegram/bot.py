@@ -260,22 +260,23 @@ async def cmd_update(message: Message, dispatcher: Dispatcher) -> None:
         await _step(f"\u274c build error: {html.escape(str(e))}")
         return
 
-    # ── Step 3: restart (bot kills itself here — send final message first) ──
+    # ── Step 3: restart ──
+    # Fire-and-forget: Popen sends API calls to Docker daemon which
+    # completes the operation even after this container is killed.
     build_time = _elapsed()
     await _step(
         f"\u2705 git pull \u2714\n"
         f"\u2705 build \u2714 [{build_time}]\n"
         f"\U0001f504 restarting \u2014 back in ~10s"
     )
-    try:
-        def _restart() -> _sp.CompletedProcess[str]:
-            return _sp.run(
-                [*compose, "up", "-d"],
-                cwd=project_dir, capture_output=True, text=True, timeout=120,
-            )
-        await loop.run_in_executor(None, _restart)
-    except Exception:
-        pass  # bot container gets killed — this is expected
+    await asyncio.sleep(0.5)  # let message arrive
+    _sp.Popen(
+        [*compose, "up", "-d"],
+        cwd=project_dir,
+        stdout=_sp.DEVNULL,
+        stderr=_sp.DEVNULL,
+        start_new_session=True,
+    )
 
 
 _INTERACTION_LEVELS = ("silent", "minimal", "balanced", "curious")
