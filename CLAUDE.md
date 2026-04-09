@@ -161,6 +161,9 @@ Obsidian как визуализационный слой: frontmatter, wikilink
 ### docs/DESIGN_WIKI_SYNTHESIS.txt
 Wiki synthesis layer: компиляция графа в markdown-страницы, save_insight, lint.
 
+### docs/DESIGN_YOUTUBE_IMPORT.txt
+YouTube video import: transcript extraction, LLM formatting, graph ingestion.
+
 ### docs/v2_done/V2_TRANSITION.txt
 Архитектурный справочник v2: модель данных, пайплайн, search, config.
 
