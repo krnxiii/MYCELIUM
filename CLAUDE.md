@@ -140,41 +140,10 @@ LIMIT 10;
 
 ---
 
-## Структура документации
+## Документация
 
-### docs/BACKLOG.txt
-Master roadmap: все фичи с приоритетами и статусами.
-Консолидирует 5 источников из v2_done/. Обновляй при реализации.
-
-### docs/DESIGN_DISTRIBUTED_ARCHITECTURE.txt
-Дизайн распределённой архитектуры: VPS, Telegram, Tailscale, Syncthing.
-
-### docs/DESIGN_METRIC_TRACKING.txt
-Дизайн metric tracking (time-series данные отдельно от графа).
-
-### docs/DOMAIN_BLUEPRINTS.txt
-Адаптивные knowledge domains: пользовательские blueprints для extraction.
-
-### docs/OBSIDIAN_LAYER.txt
-Obsidian как визуализационный слой: frontmatter, wikilinks, sync.
-
-### docs/DESIGN_WIKI_SYNTHESIS.txt
-Wiki synthesis layer: компиляция графа в markdown-страницы, save_insight, lint.
-
-### docs/DESIGN_YOUTUBE_IMPORT.txt
-YouTube video import: transcript extraction, LLM formatting, graph ingestion.
-
-### docs/v2_done/V2_TRANSITION.txt
-Архитектурный справочник v2: модель данных, пайплайн, search, config.
-
-### docs/v1/ (архив)
-Документация v1 — для справки, не для разработки.
-
-### docs/research/ (архив)
-Завершённые исследования: prompt efficiency, Obsidian tools, embeddings.
-
-### docs/v2_done/ (архив)
-Реализованные фичи, завершённые миграции, закрытые issues.
+Навигация по дизайн-документам: [docs/README.md](docs/README.md)
+Архитектурный справочник v2: [docs/v2_done/V2_TRANSITION.txt](docs/v2_done/V2_TRANSITION.txt)
 
 ---
 
