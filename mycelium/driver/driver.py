@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+
+TxExecute = Callable[
+    [str, "dict[str, Any] | None"],
+    Awaitable[list[dict[str, Any]]],
+]
 
 
 class GraphDriver(ABC):
@@ -15,6 +23,19 @@ class GraphDriver(ABC):
         query:  str,
         params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        ...
+
+    @abstractmethod
+    async def run_in_transaction(
+        self,
+        work: Callable[[TxExecute], Awaitable[T]],
+    ) -> T:
+        """Run callback inside a single write transaction.
+
+        The callback receives an `execute` fn with the same signature as
+        `execute_query`, but all calls share one tx — commit on success,
+        rollback on exception.
+        """
         ...
 
     @abstractmethod
