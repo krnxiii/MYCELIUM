@@ -145,13 +145,16 @@ async def impl_add_signal(
     source_type: str = "text", source_desc: str = "",
     extraction_focus: str = "",
     async_mode: bool = False,
+    valid_at: str = "",
 ) -> dict[str, Any]:
     my, _ = await _get()
+    va    = _parse_valid_at(valid_at)
 
     # ── R6.2: async mode — return immediately, extract in background
     if async_mode:
         return await _start_bg_extraction(
             my, content, name, source_type, source_desc, extraction_focus,
+            valid_at=va,
         )
 
     # ── Sync mode (default) — block until done
@@ -161,6 +164,7 @@ async def impl_add_signal(
         source_type=SignalType(source_type),
         source_desc=source_desc,
         extraction_focus=extraction_focus,
+        valid_at=va,
     )
     ms = int((time.monotonic() - t0) * 1000)
     log.info("mcp_tool_called", tool="add_signal", duration_ms=ms)
@@ -184,9 +188,21 @@ async def impl_add_signal(
     return resp
 
 
+def _parse_valid_at(s: str) -> datetime | None:
+    """Parse YYYY-MM-DD or ISO-8601 string to UTC datetime; empty → None."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 async def _start_bg_extraction(
     my: Mycelium, content: str, name: str,
     source_type: str, source_desc: str, extraction_focus: str,
+    valid_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Save signal as 'extracting', spawn background task, return uuid."""
     from mycelium.core.models import Signal, SignalStatus
@@ -196,12 +212,14 @@ async def _start_bg_extraction(
         source_type = SignalType(source_type),
         source_desc = source_desc,
         status      = SignalStatus.extracting,
+        valid_at    = valid_at or datetime.now(UTC),
     )
     await my._c.driver.execute_query(
         "CREATE (e:Signal {"
         "  uuid: $uuid, name: $name, content: $content,"
         "  source_type: $stype, source_desc: $sdesc,"
-        "  status: $status, created_at: datetime($created)"
+        "  status: $status, "
+        "  valid_at: datetime($valid), created_at: datetime($created)"
         "})",
         {
             "uuid":    sig.uuid,
@@ -210,6 +228,7 @@ async def _start_bg_extraction(
             "stype":   sig.source_type.value,
             "sdesc":   sig.source_desc,
             "status":  sig.status.value,
+            "valid":   sig.valid_at.isoformat(),
             "created": sig.created_at.isoformat(),
         },
     )
@@ -222,6 +241,7 @@ async def _start_bg_extraction(
                     source_type=SignalType(source_type),
                     source_desc=source_desc,
                     extraction_focus=extraction_focus,
+                    valid_at=valid_at,
                 )
                 _schedule_vault_sync()
             except Exception as e:
@@ -1322,6 +1342,7 @@ async def add_signal(
     source_type: str = "text", source_desc: str = "",
     extraction_focus: str = "",
     async_mode: bool = False,
+    valid_at: str = "",
 ) -> dict[str, Any]:
     """Ingest raw text through the FULL extraction pipeline (spawns LLM subprocess).
 
@@ -1335,10 +1356,12 @@ async def add_signal(
         source_desc: Origin description (e.g. "telegram chat")
         extraction_focus: Optional focus for LLM extraction (e.g. "technical decisions", "emotions only"). Empty = extract everything.
         async_mode: If true, return immediately with signal_uuid. Extraction runs in background. Poll get_signal(uuid) for status.
+        valid_at: Historical date the content refers to (YYYY-MM-DD or ISO). Drives freshness/decay so past events age correctly. Empty = now.
     """
     if g := _gate("write"): return g
     result = await impl_add_signal(
         content, name, source_type, source_desc, extraction_focus, async_mode,
+        valid_at,
     )
     _schedule_vault_sync()
     return result

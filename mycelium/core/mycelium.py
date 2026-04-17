@@ -564,10 +564,15 @@ class Mycelium:
             candidates, syn_vecs, merged,
         )
 
-        # [7] Consolidation
-        self._apply_consolidation(neurons, merged, state)
+        # [7] Consolidation (uses signals[0].valid_at — same as _save_all)
+        self._apply_consolidation(neurons, merged, state, signals[0])
 
-        # [8] Save all neurons + synapses via first signal
+        # [8] Fill synapse valid_at fallback from signal
+        for syn in synapses:
+            if syn.valid_at is None:
+                syn.valid_at = signals[0].valid_at
+
+        # [9] Save all neurons + synapses via first signal
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
         await self._save_all(signals[0], neurons, synapses, dup_uuids)
 
@@ -1230,10 +1235,15 @@ class Mycelium:
             candidates, syn_vecs, merged,
         )
 
-        # [6] Consolidation
-        self._apply_consolidation(neurons, merged, state)
+        # [6] Consolidation (freshness/created_at from signal.valid_at)
+        self._apply_consolidation(neurons, merged, state, signal)
 
-        # [7] Save (batch)
+        # [7] Fill synapse valid_at fallback from signal
+        for syn in synapses:
+            if syn.valid_at is None:
+                syn.valid_at = signal.valid_at
+
+        # [8] Save (batch)
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
         await self._save_all(signal, neurons, synapses, dup_uuids)
 
@@ -1637,9 +1647,15 @@ class Mycelium:
         neurons:      list[Neuron],
         merged_uuids: set[str],
         existing:     list[dict[str, Any]],
+        signal:       Signal,
     ) -> None:
-        """Update decay/freshness for re-mentioned neurons."""
+        """Update decay/freshness for re-mentioned neurons.
+
+        Freshness/created_at come from signal.valid_at — so historical data
+        ages correctly (MAX logic in Cypher keeps the most recent mention).
+        """
         state_by_uuid = {e["uuid"]: e for e in existing}
+        sv            = signal.valid_at
 
         for neuron in neurons:
             if neuron.uuid in merged_uuids:
@@ -1657,8 +1673,9 @@ class Mycelium:
             else:
                 neuron.decay_rate    = calc_decay_rate(0, self._s.decay)
                 neuron.confirmations = 0
+                neuron.created_at    = sv
 
-            neuron.freshness = datetime.now(UTC)
+            neuron.freshness = sv
 
     # ── Neo4j Operations ──────────────────────────────────
 
@@ -1718,7 +1735,11 @@ class Mycelium:
                     "    n.confidence     = e.importance, "
                     "    n.decay_rate     = e.decay_rate, "
                     "    n.confirmations  = e.confirmations, "
-                    "    n.freshness      = datetime(e.freshness), "
+                    "    n.freshness      = CASE "
+                    "                        WHEN n.freshness IS NULL "
+                    "                          OR datetime(e.freshness) > n.freshness "
+                    "                        THEN datetime(e.freshness) "
+                    "                        ELSE n.freshness END, "
                     "    n.attributes     = e.attrs, "
                     "    n.origin         = e.origin, "
                     "    n.created_at     = coalesce(n.created_at, datetime(e.created_at)), "
