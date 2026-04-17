@@ -1421,7 +1421,8 @@ class Mycelium:
                 {"vec": vec, "thr": self._s.dedup.cosine_threshold},
             )
             return rows[0] if rows else None
-        except Exception:
+        except Exception as e:
+            log.warning("vector_match_failed", error=str(e))
             return None
 
     async def _vector_match_grey(
@@ -1449,7 +1450,8 @@ class Mycelium:
                 },
             )
             return rows[0] if rows else None
-        except Exception:
+        except Exception as e:
+            log.warning("vector_match_grey_failed", error=str(e))
             return None
 
     async def _llm_dedup_batch(
@@ -1477,8 +1479,8 @@ class Mycelium:
                 for r in rows:
                     if r["fact"]:
                         facts_by_uuid.setdefault(r["uuid"], []).append(r["fact"])
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("llm_dedup_facts_load_failed", error=str(e))
 
         for idx, ext, match, _vec in pending:
             pairs.append((
