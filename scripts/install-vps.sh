@@ -251,7 +251,7 @@ select_embeddings() {
 
 # Read existing value from .env (returns empty if not found)
 # Read existing value, strip inline comments (space+#) and whitespace.
-# Preserves # inside values like "z13#" (no space before #).
+# Preserves # inside values like "secret#" (no space before #).
 _prev() {
     grep "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- \
         | sed 's/[[:space:]][[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//' || true
