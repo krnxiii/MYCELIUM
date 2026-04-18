@@ -2,6 +2,8 @@
 CLAUDE.PERSONAL.md
 docs/
 tests/
+scripts/ingest_*.py
+scripts/_state/
 
 # Claude Code (personal, not distributable)
 .claude/settings.local.json
