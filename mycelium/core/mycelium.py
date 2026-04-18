@@ -564,10 +564,15 @@ class Mycelium:
             candidates, syn_vecs, merged,
         )
 
-        # [7] Consolidation
-        self._apply_consolidation(neurons, merged, state)
+        # [7] Consolidation (uses signals[0].valid_at — same as _save_all)
+        self._apply_consolidation(neurons, merged, state, signals[0])
 
-        # [8] Save all neurons + synapses via first signal
+        # [8] Fill synapse valid_at fallback from signal
+        for syn in synapses:
+            if syn.valid_at is None:
+                syn.valid_at = signals[0].valid_at
+
+        # [9] Save all neurons + synapses via first signal
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
         await self._save_all(signals[0], neurons, synapses, dup_uuids)
 
@@ -1230,10 +1235,15 @@ class Mycelium:
             candidates, syn_vecs, merged,
         )
 
-        # [6] Consolidation
-        self._apply_consolidation(neurons, merged, state)
+        # [6] Consolidation (freshness/created_at from signal.valid_at)
+        self._apply_consolidation(neurons, merged, state, signal)
 
-        # [7] Save (batch)
+        # [7] Fill synapse valid_at fallback from signal
+        for syn in synapses:
+            if syn.valid_at is None:
+                syn.valid_at = signal.valid_at
+
+        # [8] Save (batch)
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
         await self._save_all(signal, neurons, synapses, dup_uuids)
 
@@ -1411,7 +1421,8 @@ class Mycelium:
                 {"vec": vec, "thr": self._s.dedup.cosine_threshold},
             )
             return rows[0] if rows else None
-        except Exception:
+        except Exception as e:
+            log.warning("vector_match_failed", error=str(e))
             return None
 
     async def _vector_match_grey(
@@ -1439,7 +1450,8 @@ class Mycelium:
                 },
             )
             return rows[0] if rows else None
-        except Exception:
+        except Exception as e:
+            log.warning("vector_match_grey_failed", error=str(e))
             return None
 
     async def _llm_dedup_batch(
@@ -1467,8 +1479,8 @@ class Mycelium:
                 for r in rows:
                     if r["fact"]:
                         facts_by_uuid.setdefault(r["uuid"], []).append(r["fact"])
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("llm_dedup_facts_load_failed", error=str(e))
 
         for idx, ext, match, _vec in pending:
             pairs.append((
@@ -1637,9 +1649,15 @@ class Mycelium:
         neurons:      list[Neuron],
         merged_uuids: set[str],
         existing:     list[dict[str, Any]],
+        signal:       Signal,
     ) -> None:
-        """Update decay/freshness for re-mentioned neurons."""
+        """Update decay/freshness for re-mentioned neurons.
+
+        Freshness/created_at come from signal.valid_at — so historical data
+        ages correctly (MAX logic in Cypher keeps the most recent mention).
+        """
         state_by_uuid = {e["uuid"]: e for e in existing}
+        sv            = signal.valid_at
 
         for neuron in neurons:
             if neuron.uuid in merged_uuids:
@@ -1657,8 +1675,9 @@ class Mycelium:
             else:
                 neuron.decay_rate    = calc_decay_rate(0, self._s.decay)
                 neuron.confirmations = 0
+                neuron.created_at    = sv
 
-            neuron.freshness = datetime.now(UTC)
+            neuron.freshness = sv
 
     # ── Neo4j Operations ──────────────────────────────────
 
@@ -1698,151 +1717,160 @@ class Mycelium:
         synapses:       list[Synapse],
         dup_syn_uuids:  list[str],
     ) -> None:
-        """P0.2: batch UNWIND queries (3-5 queries instead of N+1)."""
-        drv = self._c.driver
+        """P0.2: batch UNWIND queries (3-5 queries instead of N+1).
 
-        # ── Neurons batch ──────────────────────────────────
-        if neurons:
-            await drv.execute_query(
-                "UNWIND $batch AS e "
-                "MERGE (n:Neuron {uuid: e.uuid}) "
-                "SET n.name           = e.name, "
-                "    n.neuron_type    = e.neuron_type, "
-                "    n.name_embedding = CASE WHEN size(e.name_emb) > 0 "
-                "                        THEN e.name_emb "
-                "                        ELSE n.name_embedding END, "
-                "    n.importance     = e.importance, "
-                "    n.confidence     = e.importance, "
-                "    n.decay_rate     = e.decay_rate, "
-                "    n.confirmations  = e.confirmations, "
-                "    n.freshness      = datetime(e.freshness), "
-                "    n.attributes     = e.attrs, "
-                "    n.origin         = e.origin, "
-                "    n.created_at     = coalesce(n.created_at, datetime(e.created_at)), "
-                "    n.expires_at     = CASE WHEN e.expires_at IS NOT NULL "
-                "                        THEN datetime(e.expires_at) END",
-                {"batch": [
-                    {
-                        "uuid":          n.uuid,
-                        "name":          n.name,
-                        "neuron_type":   n.neuron_type,
-                        "name_emb":      n.name_embedding,
-                        "importance":    n.importance,
-                        "decay_rate":    n.decay_rate,
-                        "confirmations": n.confirmations,
-                        "freshness":     n.freshness.isoformat(),
-                        "attrs":         json.dumps(n.attributes),
-                        "origin":        n.origin,
-                        "created_at":    n.created_at.isoformat(),
-                        "expires_at":    n.expires_at.isoformat() if n.expires_at else None,
-                    }
-                    for n in neurons
-                ]},
-            )
-
-        # ── Cascade invalidation (R5.2, opt-in) ──────────
-        if (neurons and self._s.ingestion.cascade_invalidation):
-            merged = [n.uuid for n in neurons if n.confirmations > 0]
-            if merged:
-                await drv.execute_query(
-                    "UNWIND $uuids AS uuid "
-                    "MATCH (n:Neuron {uuid: uuid})-[r:SYNAPSE]->() "
-                    "WHERE r.origin = 'derived' "
-                    "SET r.needs_recompute = true",
-                    {"uuids": merged},
+        Wraps all writes in a single transaction — partial crashes roll back
+        cleanly instead of leaving orphan neurons/synapses/mentions.
+        """
+        async def _work(run: Any) -> None:
+            # ── Neurons batch ──────────────────────────────
+            if neurons:
+                await run(
+                    "UNWIND $batch AS e "
+                    "MERGE (n:Neuron {uuid: e.uuid}) "
+                    "SET n.name           = e.name, "
+                    "    n.neuron_type    = e.neuron_type, "
+                    "    n.name_embedding = CASE WHEN size(e.name_emb) > 0 "
+                    "                        THEN e.name_emb "
+                    "                        ELSE n.name_embedding END, "
+                    "    n.importance     = e.importance, "
+                    "    n.confidence     = e.importance, "
+                    "    n.decay_rate     = e.decay_rate, "
+                    "    n.confirmations  = e.confirmations, "
+                    "    n.freshness      = CASE "
+                    "                        WHEN n.freshness IS NULL "
+                    "                          OR datetime(e.freshness) > n.freshness "
+                    "                        THEN datetime(e.freshness) "
+                    "                        ELSE n.freshness END, "
+                    "    n.attributes     = e.attrs, "
+                    "    n.origin         = e.origin, "
+                    "    n.created_at     = coalesce(n.created_at, datetime(e.created_at)), "
+                    "    n.expires_at     = CASE WHEN e.expires_at IS NOT NULL "
+                    "                        THEN datetime(e.expires_at) END",
+                    {"batch": [
+                        {
+                            "uuid":          n.uuid,
+                            "name":          n.name,
+                            "neuron_type":   n.neuron_type,
+                            "name_emb":      n.name_embedding,
+                            "importance":    n.importance,
+                            "decay_rate":    n.decay_rate,
+                            "confirmations": n.confirmations,
+                            "freshness":     n.freshness.isoformat(),
+                            "attrs":         json.dumps(n.attributes),
+                            "origin":        n.origin,
+                            "created_at":    n.created_at.isoformat(),
+                            "expires_at":    n.expires_at.isoformat() if n.expires_at else None,
+                        }
+                        for n in neurons
+                    ]},
                 )
 
-        # ── Synapses batch ─────────────────────────────────
-        if synapses:
-            await drv.execute_query(
-                "UNWIND $batch AS f "
-                "MATCH (s:Neuron {uuid: f.src}), (t:Neuron {uuid: f.tgt}) "
-                "CREATE (s)-[r:SYNAPSE {"
-                "  uuid: f.uuid, fact: f.fact, fact_embedding: f.emb,"
-                "  relation: f.rel, episodes: f.episodes,"
-                "  confidence: f.conf, origin: f.origin,"
-                "  created_at: datetime(f.created_at)"
-                "}]->(t) "
-                "SET r.valid_at   = CASE WHEN f.valid_at IS NOT NULL "
-                "                     THEN datetime(f.valid_at) END, "
-                "    r.invalid_at = CASE WHEN f.invalid_at IS NOT NULL "
-                "                     THEN datetime(f.invalid_at) END, "
-                "    r.contradiction_of = f.contradiction_of",
-                {"batch": [
-                    {
-                        "src":        s.source_uuid,
-                        "tgt":        s.target_uuid,
-                        "uuid":       s.uuid,
-                        "fact":       s.fact,
-                        "emb":        s.fact_embedding,
-                        "rel":        s.relation,
-                        "episodes":   [signal.uuid],
-                        "conf":       s.confidence,
-                        "origin":     s.origin,
-                        "created_at": s.created_at.isoformat(),
-                        "valid_at":   s.valid_at.isoformat() if s.valid_at else None,
-                        "contradiction_of": s.attributes.get("contradiction_of"),
-                        "invalid_at": (s.invalid_at.isoformat()
-                                       if s.invalid_at else None),
-                    }
-                    for s in synapses
-                ]},
-            )
+            # ── Cascade invalidation (R5.2, opt-in) ────────
+            if (neurons and self._s.ingestion.cascade_invalidation):
+                merged = [n.uuid for n in neurons if n.confirmations > 0]
+                if merged:
+                    await run(
+                        "UNWIND $uuids AS uuid "
+                        "MATCH (n:Neuron {uuid: uuid})-[r:SYNAPSE]->() "
+                        "WHERE r.origin = 'derived' "
+                        "SET r.needs_recompute = true",
+                        {"uuids": merged},
+                    )
 
-        # ── Expire contradicted synapses ───────────────────
-        contradicts = [
-            s.attributes["contradicts"]
-            for s in synapses if "contradicts" in s.attributes
-        ]
-        if contradicts:
-            await drv.execute_query(
-                "UNWIND $uuids AS uuid "
-                "MATCH ()-[r:SYNAPSE {uuid: uuid}]->() "
-                "SET r.expired_at = datetime()",
-                {"uuids": contradicts},
-            )
+            # ── Synapses batch ─────────────────────────────
+            if synapses:
+                await run(
+                    "UNWIND $batch AS f "
+                    "MATCH (s:Neuron {uuid: f.src}), (t:Neuron {uuid: f.tgt}) "
+                    "CREATE (s)-[r:SYNAPSE {"
+                    "  uuid: f.uuid, fact: f.fact, fact_embedding: f.emb,"
+                    "  relation: f.rel, episodes: f.episodes,"
+                    "  confidence: f.conf, origin: f.origin,"
+                    "  created_at: datetime(f.created_at)"
+                    "}]->(t) "
+                    "SET r.valid_at   = CASE WHEN f.valid_at IS NOT NULL "
+                    "                     THEN datetime(f.valid_at) END, "
+                    "    r.invalid_at = CASE WHEN f.invalid_at IS NOT NULL "
+                    "                     THEN datetime(f.invalid_at) END, "
+                    "    r.contradiction_of = f.contradiction_of",
+                    {"batch": [
+                        {
+                            "src":        s.source_uuid,
+                            "tgt":        s.target_uuid,
+                            "uuid":       s.uuid,
+                            "fact":       s.fact,
+                            "emb":        s.fact_embedding,
+                            "rel":        s.relation,
+                            "episodes":   [signal.uuid],
+                            "conf":       s.confidence,
+                            "origin":     s.origin,
+                            "created_at": s.created_at.isoformat(),
+                            "valid_at":   s.valid_at.isoformat() if s.valid_at else None,
+                            "contradiction_of": s.attributes.get("contradiction_of"),
+                            "invalid_at": (s.invalid_at.isoformat()
+                                           if s.invalid_at else None),
+                        }
+                        for s in synapses
+                    ]},
+                )
 
-        # ── Duplicate synapses provenance ──────────────────
-        if dup_syn_uuids:
-            await drv.execute_query(
-                "UNWIND $batch AS d "
-                "MATCH ()-[f:SYNAPSE {uuid: d.uuid}]->() "
-                "WHERE NOT d.ep IN f.episodes "
-                "SET f.episodes   = f.episodes + d.ep, "
-                "    f.confidence = CASE WHEN f.confidence + d.boost <= 1.0 "
-                "                     THEN f.confidence + d.boost ELSE 1.0 END",
-                {"batch": [
-                    {
-                        "uuid":  u,
-                        "ep":    signal.uuid,
-                        "boost": self._s.decay.evidence_boost,
-                    }
-                    for u in dup_syn_uuids
-                ]},
-            )
-
-        # ── Mentions batch ─────────────────────────────────
-        if neurons:
-            mentions = [
-                Mention(source_uuid=signal.uuid, target_uuid=n.uuid)
-                for n in neurons
+            # ── Expire contradicted synapses ───────────────
+            contradicts = [
+                s.attributes["contradicts"]
+                for s in synapses if "contradicts" in s.attributes
             ]
-            await drv.execute_query(
-                "UNWIND $batch AS m "
-                "MATCH (sig:Signal {uuid: m.sig}), (nrn:Neuron {uuid: m.nrn}) "
-                "CREATE (sig)-[:MENTIONS {"
-                "  uuid: m.uuid, created_at: datetime(m.created_at)"
-                "}]->(nrn)",
-                {"batch": [
-                    {
-                        "sig":        m.source_uuid,
-                        "nrn":        m.target_uuid,
-                        "uuid":       m.uuid,
-                        "created_at": m.created_at.isoformat(),
-                    }
-                    for m in mentions
-                ]},
-            )
+            if contradicts:
+                await run(
+                    "UNWIND $uuids AS uuid "
+                    "MATCH ()-[r:SYNAPSE {uuid: uuid}]->() "
+                    "SET r.expired_at = datetime()",
+                    {"uuids": contradicts},
+                )
+
+            # ── Duplicate synapses provenance ──────────────
+            if dup_syn_uuids:
+                await run(
+                    "UNWIND $batch AS d "
+                    "MATCH ()-[f:SYNAPSE {uuid: d.uuid}]->() "
+                    "WHERE NOT d.ep IN f.episodes "
+                    "SET f.episodes   = f.episodes + d.ep, "
+                    "    f.confidence = CASE WHEN f.confidence + d.boost <= 1.0 "
+                    "                     THEN f.confidence + d.boost ELSE 1.0 END",
+                    {"batch": [
+                        {
+                            "uuid":  u,
+                            "ep":    signal.uuid,
+                            "boost": self._s.decay.evidence_boost,
+                        }
+                        for u in dup_syn_uuids
+                    ]},
+                )
+
+            # ── Mentions batch ─────────────────────────────
+            if neurons:
+                mentions = [
+                    Mention(source_uuid=signal.uuid, target_uuid=n.uuid)
+                    for n in neurons
+                ]
+                await run(
+                    "UNWIND $batch AS m "
+                    "MATCH (sig:Signal {uuid: m.sig}), (nrn:Neuron {uuid: m.nrn}) "
+                    "CREATE (sig)-[:MENTIONS {"
+                    "  uuid: m.uuid, created_at: datetime(m.created_at)"
+                    "}]->(nrn)",
+                    {"batch": [
+                        {
+                            "sig":        m.source_uuid,
+                            "nrn":        m.target_uuid,
+                            "uuid":       m.uuid,
+                            "created_at": m.created_at.isoformat(),
+                        }
+                        for m in mentions
+                    ]},
+                )
+
+        await self._c.driver.run_in_transaction(_work)
 
     # ── Summary Generation (P0.4: top-N) ──────────────────
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
 from pathlib import Path
 
 import structlog
@@ -88,7 +89,7 @@ class VaultStorage:
 
         safe      = name.replace("/", "_").replace("\\", "_")
         dest_path = _unique_path(cat_dir, safe)
-        dest_path.write_bytes(data)
+        _atomic_write_bytes(dest_path, data)
 
         rel_path = str(dest_path.relative_to(self._root))
         mime, _  = mimetypes.guess_type(name)
@@ -250,10 +251,8 @@ class VaultStorage:
 
     def _save_index(self, index: dict) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
-        self._index_path.write_text(
-            json.dumps(index, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        payload = json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8")
+        _atomic_write_bytes(self._index_path, payload)
 
 
 # ── Module helpers ────────────────────────────────────────
@@ -291,6 +290,20 @@ def _sanitize_category(cat: str) -> str:
     """Safe directory name from category string (allows / for nesting)."""
     safe = cat.strip().lower().replace(" ", "_")
     return "".join(c for c in safe if c.isalnum() or c in "_-/") or "_other"
+
+
+def _atomic_write_bytes(dest: Path, data: bytes) -> None:
+    """Write bytes via tmp + fsync + os.replace — crash-safe.
+
+    Partial writes can't leave `dest` corrupt; reader sees either the old
+    content or the full new content.
+    """
+    tmp = dest.with_name(dest.name + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, dest)
 
 
 def _unique_path(directory: Path, name: str) -> Path:

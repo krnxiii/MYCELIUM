@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 import structlog
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import AuthError, ServiceUnavailable
 
 from mycelium.config import Neo4jSettings
-from mycelium.driver.driver import GraphDriver
+from mycelium.driver.driver import GraphDriver, TxExecute
 from mycelium.exceptions import ConnectionError, SchemaError
+
+T = TypeVar("T")
 
 log = structlog.get_logger()
 
@@ -133,6 +136,21 @@ class Neo4jDriver(GraphDriver):
         async with self._driver.session(database=self._db) as session:
             result = await session.run(query, params or {})
             return await result.data()
+
+    async def run_in_transaction(
+        self,
+        work: Callable[[TxExecute], Awaitable[T]],
+    ) -> T:
+        async with self._driver.session(database=self._db) as session:
+            async def _tx_work(tx: Any) -> T:
+                async def _execute(
+                    query:  str,
+                    params: dict[str, Any] | None = None,
+                ) -> list[dict[str, Any]]:
+                    result = await tx.run(query, params or {})
+                    return await result.data()
+                return await work(_execute)
+            return await session.execute_write(_tx_work)
 
     async def build_indices(self) -> None:
         """Create all constraints + indexes (idempotent)."""

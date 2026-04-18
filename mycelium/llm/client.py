@@ -179,7 +179,8 @@ class LLMClient(LLMBackend):
         proc.stdin.close()
 
         # Drain stderr in background (prevent pipe buffer deadlock)
-        stderr_buf = bytearray()
+        stderr_buf    = bytearray()
+        stderr_drain  = 5.0  # cap wait for stderr after proc exits
 
         async def _drain_stderr() -> None:
             assert proc.stderr is not None
@@ -190,6 +191,15 @@ class LLMClient(LLMBackend):
                 stderr_buf.extend(chunk)
 
         stderr_task = asyncio.create_task(_drain_stderr())
+
+        async def _finish_stderr() -> None:
+            """Cancel + await stderr task with bounded wait — never leaks."""
+            if not stderr_task.done():
+                stderr_task.cancel()
+            try:
+                await asyncio.wait_for(stderr_task, timeout=stderr_drain)
+            except (asyncio.CancelledError, TimeoutError):
+                pass
 
         # Stream NDJSON events with inactivity timeout
         result_text   = ""
@@ -210,7 +220,7 @@ class LLMClient(LLMBackend):
                     if elapsed_idle >= inactivity_to:
                         proc.kill()
                         await proc.wait()
-                        stderr_task.cancel()
+                        await _finish_stderr()
                         raise
                     if on_progress:
                         on_progress(f"waiting… ({elapsed_idle:.0f}s)")
@@ -230,12 +240,20 @@ class LLMClient(LLMBackend):
         except Exception:
             proc.kill()
             await proc.wait()
-            stderr_task.cancel()
+            await _finish_stderr()
             raise
 
-        # Wait for process exit + stderr drain
+        # Wait for process exit + stderr drain (bounded)
         await proc.wait()
-        await stderr_task
+        try:
+            await asyncio.wait_for(stderr_task, timeout=stderr_drain)
+        except TimeoutError:
+            log.warning("stderr_drain_timeout", pid=proc.pid)
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
 
         if proc.returncode != 0:
             stderr_text = stderr_buf.decode(errors="replace").strip()
