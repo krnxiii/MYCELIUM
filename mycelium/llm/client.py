@@ -265,6 +265,16 @@ class LLMClient(LLMBackend):
             stderr_text = stderr_buf.decode(errors="replace").strip()
             if _is_session_error(stderr_text):
                 raise SessionExpiredError(stderr_text)
+            # CC CLI sometimes exits non-zero *after* a successful result
+            # event (shutdown race / cleanup glitch). Trust the streamed
+            # payload if we already have one — otherwise we throw away a
+            # paid extraction and the retry loop just repeats it.
+            if result_text:
+                log.warning("cc_cli_nonzero_rc_with_result",
+                            rc=proc.returncode,
+                            result_len=len(result_text),
+                            stderr=stderr_text[:200])
+                return result_text
             raise RuntimeError(
                 f"claude CLI rc={proc.returncode}: {stderr_text}",
             )
