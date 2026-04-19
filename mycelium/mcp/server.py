@@ -236,12 +236,16 @@ async def _start_bg_extraction(
     async def _run() -> None:
         async with _bg_sem:
             try:
+                # Pass the placeholder uuid so add_episode updates it in place
+                # (MERGE in _save_signal) and _update_status sets it to saved
+                # on completion — no duplicate Signal node.
                 await my.add_episode(
                     content, name=name,
                     source_type=SignalType(source_type),
                     source_desc=source_desc,
                     extraction_focus=extraction_focus,
                     valid_at=valid_at,
+                    signal_uuid=sig.uuid,
                 )
                 _schedule_vault_sync()
             except Exception as e:
