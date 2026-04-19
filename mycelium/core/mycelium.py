@@ -100,8 +100,14 @@ class Mycelium:
         valid_at:    datetime | None   = None,
         on_progress: ProgressFn        = None,
         extraction_focus: str          = "",
+        signal_uuid: str | None        = None,
     ) -> tuple[Signal, list[Neuron], list[Synapse], list[ExtractedQuestion]]:
-        """Full ingestion pipeline with adaptive depth (L3)."""
+        """Full ingestion pipeline with adaptive depth (L3).
+
+        ``signal_uuid`` lets callers pre-create a placeholder Signal (e.g. for
+        async MCP ingestion) and pass its uuid through — avoids a duplicate
+        Signal node being created by this pipeline.
+        """
         if not content or not content.strip():
             raise ExtractionError("Signal content cannot be empty")
         clear_contextvars()
@@ -111,13 +117,16 @@ class Mycelium:
             if on_progress:
                 on_progress(step, detail)
 
-        signal = Signal(
+        sig_kwargs: dict[str, Any] = dict(
             name        = name or content[:60],
             content     = content,
             source_type = source_type,
             source_desc = source_desc,
             valid_at    = valid_at or datetime.now(UTC),
         )
+        if signal_uuid:
+            sig_kwargs["uuid"] = signal_uuid
+        signal = Signal(**sig_kwargs)
         bind_contextvars(signal_id=signal.uuid)
         log.info("signal_created",
                  source_type=source_type.value, content_len=len(content))
@@ -1682,15 +1691,24 @@ class Mycelium:
     # ── Neo4j Operations ──────────────────────────────────
 
     async def _save_signal(self, signal: Signal) -> None:
+        # MERGE is idempotent: when a placeholder Signal was pre-created by
+        # the async MCP path (_start_bg_extraction), this preserves its uuid +
+        # status=extracting while adding the full payload on first save.
         await self._c.driver.execute_query(
-            "CREATE (e:Signal {"
-            "  uuid: $uuid, name: $name, content: $content,"
-            "  content_embedding: $emb,"
-            "  source_type: $src_type, source_desc: $src_desc,"
-            "  status: $status,"
-            "  valid_at: datetime($valid_at),"
-            "  created_at: datetime($created_at)"
-            "})",
+            "MERGE (e:Signal {uuid: $uuid}) "
+            "ON CREATE SET "
+            "  e.name = $name, e.content = $content,"
+            "  e.content_embedding = $emb,"
+            "  e.source_type = $src_type, e.source_desc = $src_desc,"
+            "  e.status = $status,"
+            "  e.valid_at = datetime($valid_at),"
+            "  e.created_at = datetime($created_at) "
+            "ON MATCH SET "
+            "  e.name = coalesce(e.name, $name),"
+            "  e.content = coalesce(e.content, $content),"
+            "  e.source_type = coalesce(e.source_type, $src_type),"
+            "  e.source_desc = coalesce(e.source_desc, $src_desc),"
+            "  e.valid_at = coalesce(e.valid_at, datetime($valid_at))",
             {
                 "uuid":       signal.uuid,
                 "name":       signal.name,

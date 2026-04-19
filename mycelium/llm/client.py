@@ -68,10 +68,16 @@ class LLMClient(LLMBackend):
         t0  = time.monotonic()
         base_cmd = [
             "claude", "-p",
-            "--output-format", "stream-json",
+            "--output-format",     "stream-json",
             "--verbose",
-            "--model",         self._s.model,
-            "--max-turns",     "1",
+            "--model",             self._s.model,
+            "--max-turns",         "1",
+            # Isolate extractor from host MCP config. Otherwise the CLI sees
+            # MYCELIUM's own MCP server (via Docker-mounted ~/.claude.json)
+            # and treats graph tools as available — the model emits tool_use,
+            # exceeds --max-turns=1, is_error=true, process exits rc=255.
+            "--strict-mcp-config",
+            "--mcp-config",        '{"mcpServers":{}}',
         ]
         sid_tag = (
             (session.session_id or "new")[:8] if session else "none"
