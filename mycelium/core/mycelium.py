@@ -432,6 +432,8 @@ class Mycelium:
         name:        str              = "",
         source_type: SignalType       = SignalType.text,
         source_desc: str              = "",
+        domain:      str              = "",
+        valid_at:    datetime | None  = None,
     ) -> tuple[Signal, list[Neuron], list[Synapse]]:
         """Ingest pre-extracted neurons/synapses (no LLM subprocess).
 
@@ -441,12 +443,19 @@ class Mycelium:
         clear_contextvars()
         t0 = time.monotonic()
 
+        # Auto-detect domain from DomainBlueprint triggers when not set —
+        # aligns with add_signal so daemons/CLI ingests land in
+        # CORTEX/{domain}/ and become queryable via signal.domain.
+        if not domain:
+            domain = self._resolve_domain(content, name, source_desc)
+
         signal = Signal(
             name        = name or content[:60],
             content     = content,
             source_type = source_type,
             source_desc = source_desc,
-            valid_at    = datetime.now(UTC),
+            domain      = domain,
+            valid_at    = valid_at or datetime.now(UTC),
         )
         bind_contextvars(signal_id=signal.uuid)
         log.info("ingest_direct_started",
@@ -537,12 +546,35 @@ class Mycelium:
             if not content:
                 log.warning("batch_item_skip", reason="missing content")
                 continue
+            it_name     = it.get("name") or content[:60]
+            it_src_desc = it.get("source_desc", "")
+            # Auto-detect domain per-item when not explicitly set.
+            it_domain = it.get("domain", "") or self._resolve_domain(
+                content, it_name, it_src_desc,
+            )
+            # Accept valid_at as datetime or ISO string; fallback to now.
+            raw_va = it.get("valid_at")
+            if isinstance(raw_va, datetime):
+                it_valid_at = raw_va
+            elif isinstance(raw_va, str) and raw_va:
+                try:
+                    it_valid_at = datetime.fromisoformat(
+                        raw_va.replace("Z", "+00:00"),
+                    )
+                    if not it_valid_at.tzinfo:
+                        it_valid_at = it_valid_at.replace(tzinfo=UTC)
+                except ValueError:
+                    it_valid_at = datetime.now(UTC)
+            else:
+                it_valid_at = datetime.now(UTC)
+
             sig = Signal(
-                name        = it.get("name") or content[:60],
+                name        = it_name,
                 content     = content,
                 source_type = SignalType(it.get("source_type", "text")),
-                source_desc = it.get("source_desc", ""),
-                valid_at    = datetime.now(UTC),
+                source_desc = it_src_desc,
+                domain      = it_domain,
+                valid_at    = it_valid_at,
             )
             signals.append(sig)
             await self._save_signal(sig)
