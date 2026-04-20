@@ -118,6 +118,12 @@ class Mycelium:
             if on_progress:
                 on_progress(step, detail)
 
+        # Auto-detect domain from DomainBlueprint triggers when not provided.
+        # Lets daemons/CLI ingests land in CORTEX/{domain}/ without explicit
+        # threading from the caller.
+        if not domain:
+            domain = self._resolve_domain(content, name, source_desc)
+
         sig_kwargs: dict[str, Any] = dict(
             name        = name or content[:60],
             content     = content,
@@ -365,6 +371,19 @@ class Mycelium:
         if self._s.obsidian.enabled and path.suffix == ".txt":
             store_name   = path.stem + ".md"
             original_ext = "txt"
+
+        # Auto-detect domain BEFORE vault.store so files land in the right
+        # CORTEX/{domain}/ bucket from day one. Peek at file head for matching.
+        if not domain:
+            head = ""
+            try:
+                if path.suffix in (".md", ".txt", ".json", ".csv"):
+                    head = path.read_text(
+                        encoding="utf-8", errors="replace",
+                    )[:2000]
+            except OSError:
+                head = ""
+            domain = self._resolve_domain(head, path.name, source_desc)
 
         entry   = self._vault.store(
             path, category=category, name=store_name, domain=domain,
@@ -1709,6 +1728,29 @@ class Mycelium:
 
             neuron.freshness = sv
 
+    # ── Domain resolution ─────────────────────────────────
+
+    def _resolve_domain(
+        self,
+        content:     str,
+        name:        str,
+        source_desc: str,
+    ) -> str:
+        """Match a DomainBlueprint by triggers. Returns domain name or ''."""
+        try:
+            domains = load_domains()
+        except Exception:
+            return ""
+        if not domains:
+            return ""
+        matched = match_domain(
+            domains,
+            content     = content or "",
+            name        = name or "",
+            source_desc = source_desc or "",
+        )
+        return matched.name if matched else ""
+
     # ── Neo4j Operations ──────────────────────────────────
 
     async def _save_signal(self, signal: Signal) -> None:
@@ -1731,7 +1773,8 @@ class Mycelium:
             "  e.content = coalesce(e.content, $content),"
             "  e.source_type = coalesce(e.source_type, $src_type),"
             "  e.source_desc = coalesce(e.source_desc, $src_desc),"
-            "  e.domain = coalesce(e.domain, $domain),"
+            "  e.domain = CASE WHEN coalesce(e.domain, '') = '' "
+            "                  THEN $domain ELSE e.domain END,"
             "  e.content_hash = coalesce(e.content_hash, $content_hash),"
             "  e.valid_at = coalesce(e.valid_at, datetime($valid_at))",
             {
