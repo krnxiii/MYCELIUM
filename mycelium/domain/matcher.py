@@ -31,12 +31,14 @@ def match_domain(
         return None
 
     raw = f"{name} {source_desc} {content[:2000]}".lower()
-    # Normalize separators so "blood_test" matches trigger "blood test"
-    search_text = raw.replace("_", " ").replace("-", " ")
+    # Normalize separators so "blood_test" matches trigger "blood test".
+    # Apply same normalization to triggers — otherwise an underscore/dash
+    # in a trigger would never match any content.
+    search_text = _normalize(raw)
 
     for domain in reversed(domains):  # newest first
         for trigger in domain.triggers:
-            if trigger.lower() in search_text:
+            if _normalize(trigger.lower()) in search_text:
                 log.info(
                     "domain_matched",
                     domain=domain.name,
@@ -45,3 +47,7 @@ def match_domain(
                 return domain
 
     return None
+
+
+def _normalize(s: str) -> str:
+    return s.replace("_", " ").replace("-", " ")
