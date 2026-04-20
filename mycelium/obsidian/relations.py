@@ -15,7 +15,8 @@ class RelatedFile:
 
 
 # Query by source_desc (not signal_uuid) — handles multi-section files:
-# all signals from the same file share source_desc = "file:{relative_path}"
+# all signals from the same file share the canonical source_desc
+# "file:{relative_path}" (normalized by Signal validator in core/models.py).
 _RELATED_QUERY = """\
 MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron)<-[:MENTIONS]-(other:Signal)
 WHERE sig.source_desc = $source_desc
@@ -34,8 +35,21 @@ _NEURONS_QUERY = """\
 MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron)
 WHERE sig.source_desc = $source_desc
   AND n.expired_at IS NULL
-RETURN DISTINCT n.name AS name, n.neuron_type AS type, n.confidence AS confidence
+RETURN DISTINCT n.uuid AS uuid, n.name AS name,
+                n.neuron_type AS type, n.confidence AS confidence
 ORDER BY name
+"""
+
+_SIGNAL_META_QUERY = """\
+MATCH (s:Signal {uuid: $signal_uuid})
+RETURN s.source_type  AS source_type,
+       s.source_desc  AS source_desc,
+       s.domain       AS domain,
+       s.status       AS status,
+       s.content_hash AS content_hash,
+       s.chunk_count  AS chunk_count,
+       toString(s.valid_at)   AS valid_at,
+       toString(s.created_at) AS created_at
 """
 
 
@@ -69,9 +83,88 @@ async def get_related(
 
 @dataclass
 class NeuronInfo:
+    uuid:       str
     name:       str
     type:       str
     confidence: float
+
+
+@dataclass
+class SignalMeta:
+    """Signal properties for document frontmatter enrichment."""
+
+    source_type:  str = ""
+    source_desc:  str = ""
+    domain:       str = ""
+    status:       str = ""
+    content_hash: str = ""
+    chunk_count:  int = 0
+    valid_at:     str = ""
+    created_at:   str = ""
+
+
+async def get_signal_meta(
+    driver:      GraphDriver,
+    signal_uuid: str,
+) -> SignalMeta | None:
+    """Fetch Signal properties for frontmatter projection."""
+    rows = await driver.execute_query(_SIGNAL_META_QUERY, {
+        "signal_uuid": signal_uuid,
+    })
+    if not rows:
+        return None
+    r = rows[0]
+    return SignalMeta(
+        source_type  = r.get("source_type")  or "",
+        source_desc  = r.get("source_desc")  or "",
+        domain       = r.get("domain")       or "",
+        status       = r.get("status")       or "",
+        content_hash = r.get("content_hash") or "",
+        chunk_count  = int(r.get("chunk_count") or 0),
+        valid_at     = r.get("valid_at")     or "",
+        created_at   = r.get("created_at")   or "",
+    )
+
+
+@dataclass
+class SourceSignal:
+    """Signal that mentions a neuron — for neuron→source backlinks."""
+
+    source_desc: str
+    name:        str
+    valid_at:    str = ""
+
+
+_SOURCE_SIGNALS_QUERY = """\
+MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron {uuid: $neuron_uuid})
+WHERE sig.source_type = 'file'
+RETURN DISTINCT sig.source_desc AS source_desc,
+                sig.name        AS name,
+                toString(sig.valid_at) AS valid_at
+ORDER BY valid_at DESC
+LIMIT $max_sources
+"""
+
+
+async def get_source_signals(
+    driver:      GraphDriver,
+    neuron_uuid: str,
+    *,
+    max_sources: int = 20,
+) -> list[SourceSignal]:
+    """Get file-signals that mention this neuron (for neuron→doc backlinks)."""
+    rows = await driver.execute_query(_SOURCE_SIGNALS_QUERY, {
+        "neuron_uuid": neuron_uuid,
+        "max_sources": max_sources,
+    })
+    return [
+        SourceSignal(
+            source_desc = r["source_desc"] or "",
+            name        = r["name"] or "",
+            valid_at    = r["valid_at"] or "",
+        )
+        for r in rows
+    ]
 
 
 @dataclass
@@ -130,6 +223,7 @@ async def get_neurons(
     })
     return [
         NeuronInfo(
+            uuid       = r.get("uuid") or "",
             name       = r["name"],
             type       = r["type"] or "",
             confidence = r.get("confidence", 0.0) or 0.0,

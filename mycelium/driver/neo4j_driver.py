@@ -82,6 +82,9 @@ PROPERTY_INDEXES = [
     "CREATE INDEX signal_created_idx IF NOT EXISTS "
     "FOR (n:Signal) ON (n.created_at)",
 
+    "CREATE INDEX signal_domain_idx IF NOT EXISTS "
+    "FOR (n:Signal) ON (n.domain)",
+
     "CREATE INDEX synapse_expired_idx IF NOT EXISTS "
     "FOR ()-[r:SYNAPSE]-() ON (r.expired_at)",
 ]
@@ -100,6 +103,14 @@ MIGRATIONS = [
     "  AND s.content_embedding IS NOT NULL "
     "  AND s.file_embedding IS NULL "
     "SET s.file_embedding = s.content_embedding",
+
+    # v2.3: normalize source_desc prefix for file signals created before
+    # Signal model auto-normalization landed (daemon ingests with bare path).
+    "MATCH (s:Signal) "
+    "WHERE s.source_type = 'file' "
+    "  AND s.source_desc IS NOT NULL "
+    "  AND NOT s.source_desc STARTS WITH 'file:' "
+    "SET s.source_desc = 'file:' + s.source_desc",
 ]
 
 EXPECTED_CONSTRAINTS = {"neuron_uuid", "signal_uuid"}
@@ -108,7 +119,7 @@ EXPECTED_INDEXES     = {
     "signal_file_emb", "synapse_emb",
     "neuron_ft", "signal_ft", "synapse_ft",
     "neuron_type_idx", "neuron_freshness_idx",
-    "signal_status_idx", "signal_created_idx",
+    "signal_status_idx", "signal_created_idx", "signal_domain_idx",
     "synapse_expired_idx",
 }
 
