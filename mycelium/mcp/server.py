@@ -271,6 +271,7 @@ async def _start_bg_extraction(
 async def impl_ingest_direct(
     content: str, neurons: str, synapses: str,
     name: str = "", source_type: str = "text", source_desc: str = "",
+    domain: str = "", valid_at: str = "",
 ) -> dict[str, Any]:
     t0     = time.monotonic()
     my, _  = await _get()
@@ -282,6 +283,8 @@ async def impl_ingest_direct(
     if not isinstance(syn_list, list):
         raise ValueError(f"synapses must be a JSON array, got {type(syn_list).__name__}")
 
+    va = _parse_valid_at(valid_at)
+
     sig, saved_neurons, saved_synapses = await my.ingest_direct(
         content,
         nrn_list,
@@ -289,6 +292,8 @@ async def impl_ingest_direct(
         name=name,
         source_type=SignalType(source_type),
         source_desc=source_desc,
+        domain=domain,
+        valid_at=va,
     )
     ms = int((time.monotonic() - t0) * 1000)
     log.info("mcp_tool_called", tool="ingest_direct", duration_ms=ms)
@@ -1384,6 +1389,7 @@ async def add_signal(
 async def ingest_direct(
     content: str, neurons: str, synapses: str,
     name: str = "", source_type: str = "text", source_desc: str = "",
+    domain: str = "", valid_at: str = "",
 ) -> dict[str, Any]:
     """Ingest PRE-EXTRACTED neurons/synapses. Zero LLM calls — embed/dedup/save only.
 
@@ -1405,11 +1411,17 @@ async def ingest_direct(
         name: Signal label (auto-generated from content if empty)
         source_type: message | text | json | file
         source_desc: Origin description (e.g. "file:/path/to/file")
+        domain: Optional domain name (e.g. "health", "work"). Empty = auto-detect
+            from DomainBlueprint triggers. Scopes vault placement and enables
+            domain-aware search.
+        valid_at: Historical date the content refers to (YYYY-MM-DD or ISO).
+            Drives freshness/decay so past events age correctly. Empty = now.
     """
     if g := _gate("write"): return g
     try:
         result = await impl_ingest_direct(
             content, neurons, synapses, name, source_type, source_desc,
+            domain, valid_at,
         )
         _schedule_vault_sync()
         return result
@@ -1429,8 +1441,11 @@ async def ingest_batch(items: str) -> dict[str, Any]:
     Args:
         items: JSON array of objects, each: {
             "content": str, "neurons": [...], "synapses": [...],
-            "name": str?, "source_type": str?, "source_desc": str?
+            "name": str?, "source_type": str?, "source_desc": str?,
+            "domain": str?, "valid_at": "YYYY-MM-DD" or ISO?
         }
+        domain: empty = auto-detect via DomainBlueprint triggers per-item.
+        valid_at: historical date for decay; empty = now.
         neurons format: [{"name": str, "neuron_type": str, "confidence": 0-1}]
         synapses format: [{"source": str, "target": str, "relation": str,
             "fact": str, "confidence": 0-1}]
