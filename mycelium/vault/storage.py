@@ -56,8 +56,14 @@ class VaultStorage:
         *,
         name:     str = "",
         category: str = "",
+        domain:   str = "",
     ) -> VaultEntry:
-        """Store file in vault/{category}/{name}. Dedup by content hash."""
+        """Store file in vault/{category}/{name}. Dedup by content hash.
+
+        When ``domain`` is given, auto-derived category is prefixed with the
+        domain: ``CORTEX/{domain}/documents`` instead of ``CORTEX/documents``.
+        Explicit ``category`` always wins (use for overrides).
+        """
         if isinstance(source, bytes):
             data = source
             name = name or "unnamed"
@@ -80,7 +86,7 @@ class VaultStorage:
                 # mimetypes doesn't know .md — fallback by extension
                 ext = Path(name).suffix.lower()
                 mime = _EXT_MIME.get(ext, "application/octet-stream")
-            category = _mime_category(mime)
+            category = _mime_category(mime, domain=domain)
         category = _sanitize_category(category)
 
         # Place file at vault/{category}/{name}
@@ -223,9 +229,9 @@ class VaultStorage:
         return entry
 
     @staticmethod
-    def mime_category(mime: str) -> str:
-        """Category from MIME type."""
-        return _mime_category(mime)
+    def mime_category(mime: str, domain: str = "") -> str:
+        """Category from MIME type (optionally scoped by domain)."""
+        return _mime_category(mime, domain=domain)
 
     # ── Internal ──────────────────────────────────────────
 
@@ -271,19 +277,35 @@ _EXT_MIME: dict[str, str] = {
 _CORTEX = "CORTEX"
 
 
-def _mime_category(mime: str) -> str:
-    """Category from MIME type (nested under cortex/)."""
+def _mime_category(mime: str, *, domain: str = "") -> str:
+    """Category from MIME type (nested under CORTEX/, optional domain scope).
+
+    Without domain → ``CORTEX/documents`` (current behavior).
+    With    domain → ``CORTEX/{domain}/documents``.
+    """
     if mime.startswith("text/") or mime == "application/pdf":
-        return f"{_CORTEX}/documents"
-    if mime.startswith("image/"):
-        return f"{_CORTEX}/images"
-    if mime.startswith("audio/"):
-        return f"{_CORTEX}/audio"
-    if mime.startswith("video/"):
-        return f"{_CORTEX}/video"
-    if mime in ("application/json", "text/csv"):
-        return f"{_CORTEX}/data"
-    return f"{_CORTEX}/_other"
+        bucket = "documents"
+    elif mime.startswith("image/"):
+        bucket = "images"
+    elif mime.startswith("audio/"):
+        bucket = "audio"
+    elif mime.startswith("video/"):
+        bucket = "video"
+    elif mime in ("application/json", "text/csv"):
+        bucket = "data"
+    else:
+        bucket = "_other"
+    if domain:
+        d = _sanitize_domain(domain)
+        if d:
+            return f"{_CORTEX}/{d}/{bucket}"
+    return f"{_CORTEX}/{bucket}"
+
+
+def _sanitize_domain(domain: str) -> str:
+    """Safe dir segment for a domain name (no slashes, lowercase)."""
+    safe = domain.strip().lower().replace(" ", "_").replace("/", "_")
+    return "".join(c for c in safe if c.isalnum() or c in "_-") or ""
 
 
 def _sanitize_category(cat: str) -> str:

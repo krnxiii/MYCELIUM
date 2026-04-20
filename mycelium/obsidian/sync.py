@@ -13,7 +13,9 @@ import structlog
 from mycelium.config import ObsidianSettings
 from mycelium.driver.driver import GraphDriver
 from mycelium.obsidian import frontmatter as fm
-from mycelium.obsidian.relations import get_neurons, get_related, get_similar
+from mycelium.obsidian.relations import (
+    get_neurons, get_related, get_signal_meta, get_similar,
+)
 from mycelium.vault.storage import VaultStorage
 
 log = structlog.get_logger()
@@ -256,12 +258,17 @@ async def _write_companion(
     mycelium_fields: dict = {
         "mycelium_signal":       signal_uuid,
         "mycelium_neurons":      [ni.name for ni in neurons_info],
+        "mycelium_neuron_uuids": [ni.uuid for ni in neurons_info if ni.uuid],
         "mycelium_neuron_types": neuron_types,
         "mycelium_importance":   importance,
         "mycelium_related":      related_links,
         "mycelium_similar":      similar_links,
         "mycelium_synced":       datetime.now(UTC).isoformat(timespec="seconds"),
     }
+    _apply_signal_meta(
+        mycelium_fields,
+        await get_signal_meta(driver, signal_uuid),
+    )
 
     # Companion body: embed the binary
     binary_rel = str(binary_path.relative_to(vault.root))
@@ -316,12 +323,17 @@ async def _write_frontmatter(
     mycelium_fields: dict = {
         "mycelium_signal":       signal_uuid,
         "mycelium_neurons":      [ni.name for ni in neurons_info],
+        "mycelium_neuron_uuids": [ni.uuid for ni in neurons_info if ni.uuid],
         "mycelium_neuron_types": neuron_types,
         "mycelium_importance":   importance,
         "mycelium_related":      related_links,
         "mycelium_similar":      similar_links,
         "mycelium_synced":       datetime.now(UTC).isoformat(timespec="seconds"),
     }
+    _apply_signal_meta(
+        mycelium_fields,
+        await get_signal_meta(driver, signal_uuid),
+    )
     if original_ext:
         mycelium_fields["mycelium_original_ext"] = original_ext
 
@@ -468,6 +480,83 @@ def _source_desc_to_path(source_desc: str) -> str:
     return ""
 
 
+def _build_source_links(sources: list) -> list[str]:
+    """Build wikilinks from source signals' source_desc."""
+    links: list[str] = []
+    seen:  set[str]  = set()
+    for s in sources:
+        rel_path = _source_desc_to_path(s.get("source_desc", ""))
+        if not rel_path or rel_path in seen:
+            continue
+        seen.add(rel_path)
+        link = fm.wikilink(rel_path if rel_path.endswith(".md") else rel_path + ".md")
+        links.append(link)
+    return links
+
+
+def _render_synapse_lines(synapses: list) -> list[str]:
+    """Render Connections section with confidence + bi-temporal validity."""
+    lines: list[str] = []
+    for s in synapses:
+        arrow = "→" if s.get("direction") == "out" else "←"
+        link  = fm.wikilink(f"{_NEURONS_DIR}/{_neuron_filename(s['name'])}")
+        raw   = s.get("fact") or ""
+        fact  = (raw[:300] + "…") if len(raw) > 300 else raw
+
+        meta_parts: list[str] = []
+        if s.get("confidence") is not None:
+            meta_parts.append(f"conf {round(float(s['confidence']), 2)}")
+        v_from = s.get("valid_at") or ""
+        v_to   = s.get("invalid_at") or ""
+        if v_from or v_to:
+            meta_parts.append(f"{v_from or '—'}…{v_to or 'present'}")
+        meta = f" ({'; '.join(meta_parts)})" if meta_parts else ""
+
+        line = f"- {arrow} {link} *{s.get('relation', '')}*{meta}: {fact}"
+        if s.get("contradiction_of"):
+            line += f"  ↔ contradicts synapse `{s['contradiction_of']}`"
+        lines.append(line)
+    return lines
+
+
+def _apply_signal_meta(fields: dict, meta: object) -> None:
+    """Merge Signal properties into document frontmatter dict."""
+    if meta is None:
+        return
+    if getattr(meta, "source_type", ""):
+        fields["mycelium_source_type"] = meta.source_type
+    if getattr(meta, "source_desc", ""):
+        fields["mycelium_source_desc"] = meta.source_desc
+    if getattr(meta, "domain", ""):
+        fields["mycelium_domain"] = meta.domain
+    if getattr(meta, "status", ""):
+        fields["mycelium_status"] = meta.status
+    if getattr(meta, "valid_at", ""):
+        fields["mycelium_valid_at"] = meta.valid_at
+    if getattr(meta, "created_at", ""):
+        fields["mycelium_created_at"] = meta.created_at
+    if getattr(meta, "content_hash", ""):
+        fields["mycelium_content_hash"] = meta.content_hash
+    if getattr(meta, "chunk_count", 0):
+        fields["mycelium_chunks"] = meta.chunk_count
+
+
+def _parse_attributes(attrs: object) -> dict | None:
+    """Parse Neuron.attributes — stored as JSON string in Neo4j."""
+    if not attrs:
+        return None
+    if isinstance(attrs, dict):
+        return attrs or None
+    if isinstance(attrs, str):
+        import json
+        try:
+            parsed = json.loads(attrs)
+            return parsed if isinstance(parsed, dict) and parsed else None
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return None
+
+
 # ── Neuron projection (experimental) ─────────────────────
 
 _NEURONS_DIR  = "NEURONS"
@@ -492,24 +581,47 @@ async def _project_neurons(
     neurons_dir = vault.root / _NEURONS_DIR
     neurons_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Query all active neurons + their synapses
+    # 1. Query all active neurons + their synapses + source signals (MENTIONS).
+    #    Use separate OPTIONAL MATCH blocks to avoid cartesian-product blow-up
+    #    when a neuron has both many synapses and many source signals.
     rows = await driver.execute_query(
         "MATCH (n:Neuron) WHERE n.expired_at IS NULL "
         "  AND n.neuron_type <> 'community' "
         "  AND (n.expires_at IS NULL OR n.expires_at > datetime()) "
         "WITH n "
-        "OPTIONAL MATCH (n)-[r:SYNAPSE]-(other:Neuron) "
-        "  WHERE r.expired_at IS NULL AND other.expired_at IS NULL "
+        "CALL { "
+        "  WITH n "
+        "  OPTIONAL MATCH (n)-[r:SYNAPSE]-(other:Neuron) "
+        "    WHERE r.expired_at IS NULL AND other.expired_at IS NULL "
+        "  RETURN collect(DISTINCT {name: other.name, type: other.neuron_type, "
+        "    fact: r.fact, relation: r.relation, "
+        "    confidence: r.confidence, "
+        "    valid_at: toString(r.valid_at), "
+        "    invalid_at: toString(r.invalid_at), "
+        "    contradiction_of: r.contradiction_of, "
+        "    direction: CASE WHEN startNode(r) = n "
+        "      THEN 'out' ELSE 'in' END}) AS synapses "
+        "} "
+        "CALL { "
+        "  WITH n "
+        "  OPTIONAL MATCH (sig:Signal)-[:MENTIONS]->(n) "
+        "    WHERE sig.source_type = 'file' "
+        "  RETURN collect(DISTINCT {source_desc: sig.source_desc, "
+        "                           name: sig.name}) AS sources "
+        "} "
         "RETURN n.uuid AS uuid, n.name AS name, "
         "  n.neuron_type AS type, n.summary AS summary, "
         "  coalesce(n.importance, n.confidence) AS confidence, "
         "  n.confirmations AS confirmations, "
+        "  n.decay_rate AS decay_rate, "
+        "  toString(n.freshness) AS freshness, "
+        "  toString(n.created_at) AS created_at, "
+        "  toString(n.expires_at) AS expires_at, "
+        "  n.origin AS origin, "
+        "  n.attributes AS attributes, "
         "  coalesce(n.importance, n.confidence) * exp(-n.decay_rate * "
         "    duration.between(n.freshness, datetime()).days) AS weight, "
-        "  collect(DISTINCT {name: other.name, type: other.neuron_type, "
-        "    fact: r.fact, relation: r.relation, "
-        "    direction: CASE WHEN startNode(r) = n "
-        "      THEN 'out' ELSE 'in' END}) AS synapses"
+        "  synapses, sources"
     )
 
     # 2. Generate .md for each neuron
@@ -527,30 +639,45 @@ async def _project_neurons(
             for s in synapses
         })
 
-        # Build synapse lines for body
-        synapse_lines = []
-        for s in synapses:
-            arrow = "→" if s["direction"] == "out" else "←"
-            link  = fm.wikilink(f"{_NEURONS_DIR}/{_neuron_filename(s['name'])}")
-            raw   = s.get("fact", "")
-            fact  = (raw[:300] + "…") if len(raw) > 300 else raw
-            synapse_lines.append(f"- {arrow} {link} *{s.get('relation', '')}*: {fact}")
+        # Build synapse lines with confidence + bi-temporal validity
+        synapse_lines = _render_synapse_lines(synapses)
+
+        # Source signals: wikilinks to docs that MENTIONS this neuron
+        sources      = [s for s in (row.get("sources") or []) if s.get("source_desc")]
+        source_links = _build_source_links(sources)
 
         fields = {
-            _PROJECTED_FM:           True,
-            "mycelium_uuid":         row["uuid"],
-            "mycelium_type":         row["type"],
-            "mycelium_confidence":   round(row["confidence"] or 0, 3),
-            "mycelium_weight":       round(row["weight"] or 0, 3),
+            _PROJECTED_FM:            True,
+            "mycelium_uuid":          row["uuid"],
+            "mycelium_type":          row["type"],
+            "mycelium_confidence":    round(row["confidence"] or 0, 3),
+            "mycelium_weight":        round(row["weight"] or 0, 3),
             "mycelium_confirmations": row["confirmations"] or 0,
-            "mycelium_connections":  wikilinks,
-            "mycelium_synced":       datetime.now(UTC).isoformat(timespec="seconds"),
+            "mycelium_decay_rate":    round(row["decay_rate"] or 0, 4),
+            "mycelium_origin":        row.get("origin") or "raw",
+            "mycelium_freshness":     row.get("freshness") or "",
+            "mycelium_created_at":    row.get("created_at") or "",
+            "mycelium_signals":       source_links,
+            "mycelium_connections":   wikilinks,
+            "mycelium_synced":        datetime.now(UTC).isoformat(timespec="seconds"),
         }
+        if row.get("expires_at"):
+            fields["mycelium_expires_at"] = row["expires_at"]
+        attrs = _parse_attributes(row.get("attributes"))
+        if attrs:
+            fields["mycelium_attributes"] = attrs
 
-        # Body: summary + synapses
+        # Body: summary + sources + synapses
         body_parts = []
         if row.get("summary"):
             body_parts.append(row["summary"])
+        if sources:
+            body_parts.append("\n## Sources\n")
+            body_parts.append("\n".join(
+                f"- {fm.wikilink(_source_desc_to_path(s['source_desc']))}"
+                for s in sources
+                if _source_desc_to_path(s["source_desc"])
+            ))
         if synapse_lines:
             body_parts.append("\n## Connections\n")
             body_parts.append("\n".join(synapse_lines))

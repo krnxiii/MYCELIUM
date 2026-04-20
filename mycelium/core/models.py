@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _uuid() -> str:
@@ -47,9 +47,25 @@ class Signal(BaseModel):
     content_embedding: list[float]  = Field(default_factory=list)
     source_type:       SignalType   = SignalType.text
     source_desc:       str          = ""
+    domain:            str          = ""
     status:            SignalStatus = SignalStatus.pending
+    content_hash:      str          = ""
+    chunk_count:       int          = 0
     valid_at:          datetime     = Field(default_factory=_now)
     created_at:        datetime     = Field(default_factory=_now)
+
+    @model_validator(mode="after")
+    def _normalize_source_desc(self) -> Signal:
+        # File signals must carry the `file:` prefix so Obsidian sync /
+        # related queries match uniformly. External callers (daemons, MCP)
+        # may submit the bare relative path — normalize here.
+        if (
+            self.source_type == SignalType.file
+            and self.source_desc
+            and not self.source_desc.startswith("file:")
+        ):
+            self.source_desc = f"file:{self.source_desc}"
+        return self
 
 
 # ── Neuron ─────────────────────────────────────────────────────────

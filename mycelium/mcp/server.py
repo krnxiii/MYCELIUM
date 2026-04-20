@@ -146,6 +146,7 @@ async def impl_add_signal(
     extraction_focus: str = "",
     async_mode: bool = False,
     valid_at: str = "",
+    domain: str = "",
 ) -> dict[str, Any]:
     my, _ = await _get()
     va    = _parse_valid_at(valid_at)
@@ -154,7 +155,7 @@ async def impl_add_signal(
     if async_mode:
         return await _start_bg_extraction(
             my, content, name, source_type, source_desc, extraction_focus,
-            valid_at=va,
+            valid_at=va, domain=domain,
         )
 
     # ── Sync mode (default) — block until done
@@ -163,6 +164,7 @@ async def impl_add_signal(
         content, name=name,
         source_type=SignalType(source_type),
         source_desc=source_desc,
+        domain=domain,
         extraction_focus=extraction_focus,
         valid_at=va,
     )
@@ -203,6 +205,7 @@ async def _start_bg_extraction(
     my: Mycelium, content: str, name: str,
     source_type: str, source_desc: str, extraction_focus: str,
     valid_at: datetime | None = None,
+    domain: str = "",
 ) -> dict[str, Any]:
     """Save signal as 'extracting', spawn background task, return uuid."""
     from mycelium.core.models import Signal, SignalStatus
@@ -211,6 +214,7 @@ async def _start_bg_extraction(
         content     = content,
         source_type = SignalType(source_type),
         source_desc = source_desc,
+        domain      = domain,
         status      = SignalStatus.extracting,
         valid_at    = valid_at or datetime.now(UTC),
     )
@@ -218,6 +222,7 @@ async def _start_bg_extraction(
         "CREATE (e:Signal {"
         "  uuid: $uuid, name: $name, content: $content,"
         "  source_type: $stype, source_desc: $sdesc,"
+        "  domain: $domain,"
         "  status: $status, "
         "  valid_at: datetime($valid), created_at: datetime($created)"
         "})",
@@ -227,6 +232,7 @@ async def _start_bg_extraction(
             "content": sig.content,
             "stype":   sig.source_type.value,
             "sdesc":   sig.source_desc,
+            "domain":  sig.domain,
             "status":  sig.status.value,
             "valid":   sig.valid_at.isoformat(),
             "created": sig.created_at.isoformat(),
@@ -243,6 +249,7 @@ async def _start_bg_extraction(
                     content, name=name,
                     source_type=SignalType(source_type),
                     source_desc=source_desc,
+                    domain=domain,
                     extraction_focus=extraction_focus,
                     valid_at=valid_at,
                     signal_uuid=sig.uuid,
@@ -1347,6 +1354,7 @@ async def add_signal(
     extraction_focus: str = "",
     async_mode: bool = False,
     valid_at: str = "",
+    domain: str = "",
 ) -> dict[str, Any]:
     """Ingest raw text through the FULL extraction pipeline (spawns LLM subprocess).
 
@@ -1361,11 +1369,12 @@ async def add_signal(
         extraction_focus: Optional focus for LLM extraction (e.g. "technical decisions", "emotions only"). Empty = extract everything.
         async_mode: If true, return immediately with signal_uuid. Extraction runs in background. Poll get_signal(uuid) for status.
         valid_at: Historical date the content refers to (YYYY-MM-DD or ISO). Drives freshness/decay so past events age correctly. Empty = now.
+        domain: Optional domain name (e.g. "health", "work") — scopes vault placement and enables domain-aware search.
     """
     if g := _gate("write"): return g
     result = await impl_add_signal(
         content, name, source_type, source_desc, extraction_focus, async_mode,
-        valid_at,
+        valid_at, domain,
     )
     _schedule_vault_sync()
     return result
@@ -2155,6 +2164,7 @@ async def vault_store(
     file_content: str = "",
     file_name:    str = "",
     category:     str = "",
+    domain:       str = "",
 ) -> dict[str, Any]:
     """Store file in vault. Step 1 of 3: vault_store → ingest_direct → vault_link.
 
@@ -2169,6 +2179,7 @@ async def vault_store(
         file_content: Base64-encoded file bytes (remote mode)
         file_name: Original filename including extension (remote mode)
         category: Override category (default: auto from MIME type)
+        domain: Optional domain scope — routes file to CORTEX/{domain}/{bucket}.
 
     Returns:
         relative_path, content_hash, mime_type, size_bytes, is_duplicate, original_ext
@@ -2212,6 +2223,7 @@ async def vault_store(
         data if file_content else pathlib.Path(file_path).expanduser(),
         category=category,
         name=store_name or (file_name if file_content else ""),
+        domain=domain,
     )
     _schedule_vault_sync()
     return {
@@ -2244,6 +2256,15 @@ async def vault_link(
     vault = VaultStorage(settings.vault)
 
     vault.update_signal_uuid(relative_path, signal_uuid)
+
+    # Mirror vault content_hash onto Signal so graph can detect drift without
+    # needing the vault index.
+    entry = vault.get_by_path(relative_path)
+    if entry and entry.content_hash:
+        await my._c.driver.execute_query(
+            "MATCH (e:Signal {uuid: $uuid}) SET e.content_hash = $hash",
+            {"uuid": signal_uuid, "hash": entry.content_hash},
+        )
 
     if settings.obsidian.enabled:
         from mycelium.obsidian.sync import inject_after_ingest

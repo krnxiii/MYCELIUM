@@ -97,6 +97,7 @@ class Mycelium:
         name:        str              = "",
         source_type: SignalType       = SignalType.text,
         source_desc: str              = "",
+        domain:      str              = "",
         valid_at:    datetime | None   = None,
         on_progress: ProgressFn        = None,
         extraction_focus: str          = "",
@@ -122,6 +123,7 @@ class Mycelium:
             content     = content,
             source_type = source_type,
             source_desc = source_desc,
+            domain      = domain,
             valid_at    = valid_at or datetime.now(UTC),
         )
         if signal_uuid:
@@ -295,12 +297,21 @@ class Mycelium:
                         {"uuid": signal.uuid, "emb": file_emb},
                     )
 
-            # Chunk metadata (multi-chunk only)
+            # Chunk metadata (always persist count; meta JSON only for multi-chunk)
             if len(chunks) > 1:
                 await self._c.driver.execute_query(
                     "MATCH (e:Signal {uuid: $uuid}) "
-                    "SET e.chunk_meta = $meta",
-                    {"uuid": signal.uuid, "meta": json.dumps(chunk_meta)},
+                    "SET e.chunk_meta = $meta, e.chunk_count = $count",
+                    {
+                        "uuid":  signal.uuid,
+                        "meta":  json.dumps(chunk_meta),
+                        "count": len(chunks),
+                    },
+                )
+            else:
+                await self._c.driver.execute_query(
+                    "MATCH (e:Signal {uuid: $uuid}) SET e.chunk_count = 1",
+                    {"uuid": signal.uuid},
                 )
 
             # S3: filter questions by interaction level
@@ -344,6 +355,7 @@ class Mycelium:
         *,
         category:    str        = "",
         source_desc: str        = "",
+        domain:      str        = "",
         on_progress: ProgressFn = None,
     ) -> tuple[Signal, list[Neuron], list[Synapse], list[ExtractedQuestion]]:
         """Ingest file: vault store → extract text → pipeline."""
@@ -354,7 +366,9 @@ class Mycelium:
             store_name   = path.stem + ".md"
             original_ext = "txt"
 
-        entry   = self._vault.store(path, category=category, name=store_name)
+        entry   = self._vault.store(
+            path, category=category, name=store_name, domain=domain,
+        )
         content = self._vault.extract_text(entry)
         if not content:
             raise ExtractionError(f"No text from {path.name}")
@@ -365,7 +379,14 @@ class Mycelium:
             name        = path.name,
             source_type = SignalType.file,
             source_desc = source_desc or f"file:{entry.relative_path}",
+            domain      = domain,
             on_progress = on_progress,
+        )
+
+        # Persist vault content_hash on the Signal for drift detection.
+        await self._c.driver.execute_query(
+            "MATCH (e:Signal {uuid: $uuid}) SET e.content_hash = $hash",
+            {"uuid": result[0].uuid, "hash": entry.content_hash},
         )
 
         # Link signal UUID back to vault index
@@ -1700,6 +1721,8 @@ class Mycelium:
             "  e.name = $name, e.content = $content,"
             "  e.content_embedding = $emb,"
             "  e.source_type = $src_type, e.source_desc = $src_desc,"
+            "  e.domain = $domain, e.content_hash = $content_hash,"
+            "  e.chunk_count = $chunk_count,"
             "  e.status = $status,"
             "  e.valid_at = datetime($valid_at),"
             "  e.created_at = datetime($created_at) "
@@ -1708,17 +1731,22 @@ class Mycelium:
             "  e.content = coalesce(e.content, $content),"
             "  e.source_type = coalesce(e.source_type, $src_type),"
             "  e.source_desc = coalesce(e.source_desc, $src_desc),"
+            "  e.domain = coalesce(e.domain, $domain),"
+            "  e.content_hash = coalesce(e.content_hash, $content_hash),"
             "  e.valid_at = coalesce(e.valid_at, datetime($valid_at))",
             {
-                "uuid":       signal.uuid,
-                "name":       signal.name,
-                "content":    signal.content,
-                "emb":        signal.content_embedding or [],
-                "src_type":   signal.source_type.value,
-                "src_desc":   signal.source_desc,
-                "status":     signal.status.value,
-                "valid_at":   signal.valid_at.isoformat(),
-                "created_at": signal.created_at.isoformat(),
+                "uuid":         signal.uuid,
+                "name":         signal.name,
+                "content":      signal.content,
+                "emb":          signal.content_embedding or [],
+                "src_type":     signal.source_type.value,
+                "src_desc":     signal.source_desc,
+                "domain":       signal.domain,
+                "content_hash": signal.content_hash,
+                "chunk_count":  signal.chunk_count,
+                "status":       signal.status.value,
+                "valid_at":     signal.valid_at.isoformat(),
+                "created_at":   signal.created_at.isoformat(),
             },
         )
 
