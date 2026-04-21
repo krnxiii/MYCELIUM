@@ -73,11 +73,20 @@ class VaultStorage:
 
         content_hash = hashlib.sha256(data).hexdigest()
 
-        # Dedup: same content -> return existing entry
+        # Dedup: same content -> return existing entry.
+        # If index points to a missing file (stale entry after external wipe),
+        # fall through to normal store path and overwrite the index entry.
         existing_path = self.find_by_hash(content_hash)
         if existing_path:
-            log.debug("vault_dedup", hash=content_hash[:16])
-            return self.get_by_path(existing_path)  # type: ignore[return-value]
+            entry = self.get_by_path(existing_path)
+            if entry is not None:
+                log.debug("vault_dedup", hash=content_hash[:16])
+                return entry
+            log.warning("vault_index_stale",
+                        hash=content_hash[:16], path=existing_path)
+            index = self._load_index()
+            index.pop(existing_path, None)
+            self._save_index(index)
 
         # Determine category from MIME if not provided
         if not category:
