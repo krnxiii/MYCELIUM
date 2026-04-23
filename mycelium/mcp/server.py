@@ -2180,6 +2180,7 @@ async def vault_store(
     file_name:    str = "",
     category:     str = "",
     domain:       str = "",
+    subdomain:    str = "",
 ) -> dict[str, Any]:
     """Store file in vault. Step 1 of 3: vault_store → ingest_direct → vault_link.
 
@@ -2195,6 +2196,9 @@ async def vault_store(
         file_name: Original filename including extension (remote mode)
         category: Override category (default: auto from MIME type)
         domain: Optional domain scope — routes file to CORTEX/{domain}/{bucket}.
+        subdomain: Optional second level — routes to CORTEX/{domain}/{subdomain}/{bucket}.
+            Use for provenance/topic split (e.g. chatgpt_archive + tech).
+            Ignored without domain.
 
     Returns:
         relative_path, content_hash, mime_type, size_bytes, is_duplicate, original_ext
@@ -2239,6 +2243,7 @@ async def vault_store(
         category=category,
         name=store_name or (file_name if file_content else ""),
         domain=domain,
+        subdomain=subdomain,
     )
     _schedule_vault_sync()
     return {
