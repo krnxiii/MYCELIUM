@@ -362,9 +362,15 @@ class Mycelium:
         category:    str        = "",
         source_desc: str        = "",
         domain:      str        = "",
+        subdomain:   str        = "",
         on_progress: ProgressFn = None,
     ) -> tuple[Signal, list[Neuron], list[Synapse], list[ExtractedQuestion]]:
-        """Ingest file: vault store → extract text → pipeline."""
+        """Ingest file: vault store → extract text → pipeline.
+
+        ``subdomain`` adds a second path level: vault files land in
+        ``CORTEX/{domain}/{subdomain}/{bucket}``. Signal only carries
+        ``domain`` — subdomain is a vault routing hint, not a graph property.
+        """
         # .txt → .md for Obsidian (Obsidian can't parse frontmatter in .txt)
         store_name   = ""
         original_ext = ""
@@ -386,7 +392,8 @@ class Mycelium:
             domain = self._resolve_domain(head, path.name, source_desc)
 
         entry   = self._vault.store(
-            path, category=category, name=store_name, domain=domain,
+            path, category=category, name=store_name,
+            domain=domain, subdomain=subdomain,
         )
         content = self._vault.extract_text(entry)
         if not content:

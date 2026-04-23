@@ -54,14 +54,18 @@ class VaultStorage:
         self,
         source: Path | bytes,
         *,
-        name:     str = "",
-        category: str = "",
-        domain:   str = "",
+        name:      str = "",
+        category:  str = "",
+        domain:    str = "",
+        subdomain: str = "",
     ) -> VaultEntry:
         """Store file in vault/{category}/{name}. Dedup by content hash.
 
         When ``domain`` is given, auto-derived category is prefixed with the
         domain: ``CORTEX/{domain}/documents`` instead of ``CORTEX/documents``.
+        When ``subdomain`` is also given, a second level is inserted:
+        ``CORTEX/{domain}/{subdomain}/documents`` — use for provenance/topic
+        splits inside one Blueprint (e.g. chatgpt_archive + tech).
         Explicit ``category`` always wins (use for overrides).
         """
         if isinstance(source, bytes):
@@ -95,7 +99,7 @@ class VaultStorage:
                 # mimetypes doesn't know .md — fallback by extension
                 ext = Path(name).suffix.lower()
                 mime = _EXT_MIME.get(ext, "application/octet-stream")
-            category = _mime_category(mime, domain=domain)
+            category = _mime_category(mime, domain=domain, subdomain=subdomain)
         category = _sanitize_category(category)
 
         # Place file at vault/{category}/{name}
@@ -238,9 +242,9 @@ class VaultStorage:
         return entry
 
     @staticmethod
-    def mime_category(mime: str, domain: str = "") -> str:
-        """Category from MIME type (optionally scoped by domain)."""
-        return _mime_category(mime, domain=domain)
+    def mime_category(mime: str, domain: str = "", subdomain: str = "") -> str:
+        """Category from MIME type (optionally scoped by domain + subdomain)."""
+        return _mime_category(mime, domain=domain, subdomain=subdomain)
 
     # ── Internal ──────────────────────────────────────────
 
@@ -286,11 +290,15 @@ _EXT_MIME: dict[str, str] = {
 _CORTEX = "CORTEX"
 
 
-def _mime_category(mime: str, *, domain: str = "") -> str:
+def _mime_category(mime: str, *, domain: str = "", subdomain: str = "") -> str:
     """Category from MIME type (nested under CORTEX/, optional domain scope).
 
-    Without domain → ``CORTEX/documents`` (current behavior).
-    With    domain → ``CORTEX/{domain}/documents``.
+    Without domain           → ``CORTEX/documents``
+    With    domain           → ``CORTEX/{domain}/documents``
+    With    domain+subdomain → ``CORTEX/{domain}/{subdomain}/documents``
+
+    Subdomain without domain is silently ignored — the nesting makes no sense
+    without a parent scope.
     """
     if mime.startswith("text/") or mime == "application/pdf":
         bucket = "documents"
@@ -304,11 +312,17 @@ def _mime_category(mime: str, *, domain: str = "") -> str:
         bucket = "data"
     else:
         bucket = "_other"
+    parts = [_CORTEX]
     if domain:
         d = _sanitize_domain(domain)
         if d:
-            return f"{_CORTEX}/{d}/{bucket}"
-    return f"{_CORTEX}/{bucket}"
+            parts.append(d)
+            if subdomain:
+                sd = _sanitize_domain(subdomain)
+                if sd:
+                    parts.append(sd)
+    parts.append(bucket)
+    return "/".join(parts)
 
 
 def _sanitize_domain(domain: str) -> str:
