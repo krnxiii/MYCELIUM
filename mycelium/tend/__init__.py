@@ -15,6 +15,7 @@ Heartbeat (cron / launchd / systemd) drives freshness, not in-process daemons.
 
 from __future__ import annotations
 
+from mycelium.tend.lint import LintFinding, LintReport, lint
 from mycelium.tend.orchestrator import DEFAULT_STAGES, TendReport, tend
 from mycelium.tend.stages.centrality import centrality_refresh
 from mycelium.tend.stages.decay import StageResult, decay_sweep
@@ -23,10 +24,13 @@ from mycelium.tend.stages.vault import vault_compact
 
 __all__ = [
     "DEFAULT_STAGES",
+    "LintFinding",
+    "LintReport",
     "StageResult",
     "TendReport",
     "centrality_refresh",
     "decay_sweep",
+    "lint",
     "prune_dead",
     "tend",
     "vault_compact",
