@@ -72,7 +72,7 @@ async def decay_sweep(
                 "WITH n, "
                 "  coalesce(n.importance, n.confidence) * "
                 "  exp(-n.decay_rate * "
-                "    duration.between(n.freshness, datetime()).days) AS ew "
+                "    duration.inDays(n.freshness, datetime()).days) AS ew "
                 "RETURN n.uuid AS uuid, ew",
                 {"last_uuid": last_uuid, "batch_size": s.sweep_batch_size},
             )

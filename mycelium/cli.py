@@ -19,6 +19,7 @@ from mycelium.core.types import MyceliumClients
 from mycelium.driver.neo4j_driver import Neo4jDriver
 from mycelium.embedder.client import make_embedder
 from mycelium.llm import make_llm_client
+from mycelium.utils.decay import cypher_effective_weight
 
 app = typer.Typer(name="mycelium", help="MYCELIUM — Mind Wide Web")
 
@@ -782,8 +783,7 @@ def stats() -> None:
             # ── Stale neurons (low effective weight) ──
             stale = await drv.execute_query(
                 "MATCH (n:Neuron) WHERE n.expired_at IS NULL "
-                "WITH n, n.confidence * exp(-n.decay_rate * "
-                "  duration.between(n.freshness, datetime()).days) AS ew "
+                f"WITH n, {cypher_effective_weight('n')} AS ew "
                 "WHERE ew < 0.1 "
                 "RETURN count(n) AS stale"
             )

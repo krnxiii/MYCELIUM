@@ -64,7 +64,7 @@ async def prune_dead(
             "OPTIONAL MATCH (z:Signal) "
             "  WHERE z.status = 'extracting' "
             "    AND z.created_at IS NOT NULL "
-            "    AND duration.between(z.created_at, datetime()).hours > $hrs "
+            "    AND duration.inSeconds(z.created_at, datetime()).hours > $hrs "
             "RETURN expired_neurons, expired_synapses, ttl_synapses, "
             "       orphan_signals, count(z) AS zombie_signals",
             {"hrs": s.zombie_age_hours},
@@ -114,7 +114,7 @@ async def prune_dead(
                 "MATCH (z:Signal) "
                 "WHERE z.status = 'extracting' "
                 "  AND z.created_at IS NOT NULL "
-                "  AND duration.between(z.created_at, datetime()).hours > $hrs "
+                "  AND duration.inSeconds(z.created_at, datetime()).hours > $hrs "
                 "SET z.status = 'failed'",
                 {"hrs": s.zombie_age_hours},
             )

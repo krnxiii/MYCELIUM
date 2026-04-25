@@ -20,6 +20,7 @@ from mycelium.config import CommunitySettings
 from mycelium.driver.neo4j_driver import Neo4jDriver
 from mycelium.embedder.client import EmbedderClient
 from mycelium.llm.base import LLMBackend
+from mycelium.utils.decay import cypher_effective_weight
 
 log = structlog.get_logger()
 
@@ -118,8 +119,7 @@ async def _run_louvain(drv: Neo4jDriver, resolution: float) -> list[dict]:
         "AND n.neuron_type <> 'community' "
         "RETURN n.uuid AS uuid, n.name AS name, "
         "  n.neuron_type AS neuron_type, "
-        "  coalesce(n.importance, n.confidence) * exp(-n.decay_rate * "
-        "    duration.between(n.freshness, datetime()).days) AS weight"
+        f"  {cypher_effective_weight('n')} AS weight"
     )
     if not nodes:
         return []

@@ -41,7 +41,12 @@ from mycelium.tend import DEFAULT_STAGES as _TEND_DEFAULT_STAGES
 from mycelium.tend import lint as _tend_lint
 from mycelium.tend import tend as _tend_run
 from mycelium.tend.report import format_lint, format_tend, write_log
-from mycelium.utils.decay import calc_decay_rate, consolidate, effective_weight
+from mycelium.utils.decay import (
+    calc_decay_rate,
+    consolidate,
+    cypher_effective_weight,
+    effective_weight_from_data,
+)
 
 log = structlog.get_logger()
 mcp = FastMCP("mycelium")
@@ -516,15 +521,9 @@ async def impl_get_neuron(uuid: str) -> dict[str, Any]:
     if not rows:
         return {"error": f"Neuron {uuid} not found"}
 
-    r         = rows[0]
-    e         = dict(r["e"])
-    freshness = e.get("freshness")
-    if hasattr(freshness, "to_native"):
-        freshness = freshness.to_native()
-    ew = effective_weight(
-        e.get("confidence", 1.0), e.get("decay_rate", 0.008),
-        freshness or datetime.now(UTC),
-    )
+    r  = rows[0]
+    e  = dict(r["e"])
+    ew = effective_weight_from_data(e)
     return {
         "uuid": e.get("uuid"), "name": e.get("name"),
         "neuron_type": e.get("neuron_type"), "summary": e.get("summary", ""),
@@ -555,11 +554,10 @@ async def impl_list_neurons(
         sort_by = "freshness"
     order = _ORDER_ALLOWLIST[sort_by]
 
+    ew = cypher_effective_weight("e")
     return await my._c.driver.execute_query(
         f"MATCH (e:Neuron) {where} "
-        "WITH e, coalesce(e.importance, e.confidence) AS imp, e.decay_rate AS dr, "
-        "  duration.between(e.freshness, datetime()).days AS days "
-        "WITH e, imp * exp(-dr * days) AS ew, imp "
+        f"WITH e, {ew} AS ew, coalesce(e.importance, e.confidence) AS imp "
         "RETURN e.uuid AS uuid, e.name AS name, e.neuron_type AS type, "
         "  imp AS importance, e.confirmations AS confirmations, "
         "  coalesce(e.origin, 'raw') AS origin, "
@@ -711,8 +709,7 @@ async def impl_health(verbose: bool = False) -> dict[str, Any]:
         stale = await drv.execute_query(
             "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
             "  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
-            "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-            "  duration.between(e.freshness, datetime()).days) AS ew "
+            f"WITH e, {cypher_effective_weight('e')} AS ew "
             "WHERE ew < 0.1 "
             "RETURN e.name AS name, round(ew * 10000) / 10000 AS weight "
             "ORDER BY ew ASC LIMIT 10"
@@ -2171,18 +2168,17 @@ async def context_resource() -> str:
             "OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL "
             "RETURN neurons, count(f) AS synapses"
         )
+        ew = cypher_effective_weight("e")
         top = await drv.execute_query(
             "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
-            "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-            "  duration.between(e.freshness, datetime()).days) AS ew "
+            f"WITH e, {ew} AS ew "
             "WHERE ew > 0.1 "
             "RETURN e.name AS name, e.neuron_type AS type, round(ew * 100) / 100 AS weight "
             "ORDER BY ew DESC LIMIT 15"
         )
         recent = await drv.execute_query(
             "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
-            "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-            "  duration.between(e.freshness, datetime()).days) AS ew "
+            f"WITH e, {ew} AS ew "
             "WHERE ew > 0.1 "
             "RETURN e.name AS name, e.neuron_type AS type "
             "ORDER BY e.freshness DESC LIMIT 10"
