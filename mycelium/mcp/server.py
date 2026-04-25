@@ -37,6 +37,10 @@ from mycelium.domain.tracking import (
 )
 from mycelium.core.sleep import build_sleep_report
 from mycelium.core.telemetry import Telemetry
+from mycelium.tend import DEFAULT_STAGES as _TEND_DEFAULT_STAGES
+from mycelium.tend import lint as _tend_lint
+from mycelium.tend import tend as _tend_run
+from mycelium.tend.report import format_lint, format_tend, write_log
 from mycelium.utils.decay import calc_decay_rate, consolidate, effective_weight
 
 log = structlog.get_logger()
@@ -1772,6 +1776,93 @@ async def sleep_report(
     return await impl_sleep_report(
         weak_threshold, dup_cosine_low, dup_cosine_high, limit,
     )
+
+
+# ── Maintenance toolkit (v0.5.0) ──────────────────────────────────
+
+
+async def impl_tend(
+    stages:       list[str],
+    dry_run:      bool,
+    write_report: bool,
+) -> dict[str, Any]:
+    my, settings = await _get()
+    chosen = tuple(stages) if stages else _TEND_DEFAULT_STAGES
+    report = await _tend_run(
+        my._c.driver, settings=settings, stages=chosen, dry_run=dry_run,
+    )
+    out = report.to_dict()
+    if write_report:
+        try:
+            path = write_log(
+                format_tend(report),
+                vault_root=settings.vault.path,
+                kind="tend",
+            )
+            out["report_path"] = str(path)
+        except Exception as e:
+            log.warning("tend_report_write_failed", error=str(e))
+    return out
+
+
+@mcp.tool
+async def tend(
+    stages:       list[str] = None,   # type: ignore[assignment]
+    dry_run:      bool      = False,
+    write_report: bool      = True,
+) -> dict[str, Any]:
+    """Run maintenance stages. Pass empty/None for all four default stages.
+
+    Stages (Tier 0, no LLM, idempotent):
+      decay_sweep        — materialize effective_weight on Neuron
+      prune_dead         — drop expired/orphan/zombie data
+      vault_compact      — reconcile vault disk ↔ index ↔ graph
+      centrality_refresh — materialize Neuron.degree
+
+    With write_report=True (default), a markdown summary is appended to
+    `<vault>/_AGENT/log/YYYY-MM-DD-tend.md`.
+
+    Args:
+        stages: Subset of stage names to run; empty = all defaults
+        dry_run: Compute counts but skip writes
+        write_report: Append markdown report to _AGENT/log/
+    """
+    if g := _gate("write"): return g
+    return await impl_tend(stages or [], dry_run, write_report)
+
+
+async def impl_lint(write_report: bool) -> dict[str, Any]:
+    my, settings = await _get()
+    report = await _tend_lint(my._c.driver, settings=settings.tend)
+    out    = report.to_dict()
+    if write_report:
+        try:
+            path = write_log(
+                format_lint(report),
+                vault_root=settings.vault.path,
+                kind="lint",
+            )
+            out["report_path"] = str(path)
+        except Exception as e:
+            log.warning("lint_report_write_failed", error=str(e))
+    return out
+
+
+@mcp.tool
+async def lint(write_report: bool = False) -> dict[str, Any]:
+    """Read-only structural maintenance check; never writes to the graph.
+
+    Returns findings (category, severity, count, samples) and a health
+    score in [0, 1]. 1.0 = pristine.
+
+    Use for: deciding whether `tend` is needed and what scope.
+    Use INSTEAD: sleep_report — for distill candidates (weak/dup/gaps).
+
+    Args:
+        write_report: If true, append markdown to _AGENT/log/
+    """
+    if g := _gate("read"): return g
+    return await impl_lint(write_report)
 
 
 async def impl_detect_communities(
