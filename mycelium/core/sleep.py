@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 
 from mycelium.driver.neo4j_driver import Neo4jDriver
+from mycelium.utils.decay import cypher_effective_weight
 
 log = structlog.get_logger()
 
@@ -98,11 +99,11 @@ async def _find_weak_neurons(
     drv: Neo4jDriver, threshold: float, limit: int,
 ) -> list[dict[str, Any]]:
     """Neurons with effective weight below threshold."""
+    ew = cypher_effective_weight("e")
     return await drv.execute_query(
         "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
         "  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
-        "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-        "  duration.between(e.freshness, datetime()).days) AS ew "
+        f"WITH e, {ew} AS ew "
         "WHERE ew < $threshold "
         "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL "
         "WITH e, ew, count(f) AS syn_count "
@@ -119,15 +120,14 @@ async def _find_isolated_neurons(
     drv: Neo4jDriver, max_synapses: int, limit: int,
 ) -> list[dict[str, Any]]:
     """Neurons with few or no active synapses."""
+    ew = cypher_effective_weight("e")
     return await drv.execute_query(
         "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
         "  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
         "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL "
         "WITH e, count(f) AS syn_count "
         "WHERE syn_count <= $max_syn "
-        "WITH e, syn_count, "
-        "  coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-        "  duration.between(e.freshness, datetime()).days) AS ew "
+        f"WITH e, syn_count, {ew} AS ew "
         "RETURN e.uuid AS uuid, e.name AS name, "
         "  e.neuron_type AS type, "
         "  round(ew * 10000) / 10000 AS weight, "

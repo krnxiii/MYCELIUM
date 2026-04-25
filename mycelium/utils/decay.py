@@ -43,6 +43,40 @@ def consolidate(
     return new_imp, new_rate, new_count
 
 
+def effective_weight_from_data(
+    d:               dict,
+    *,
+    staleness_hours: int  = 24,
+    now:             datetime | None = None,
+) -> float:
+    """Return effective_weight for a Neuron-as-dict.
+
+    Prefers materialized `effective_weight` (set by `tend decay_sweep`) when
+    present and within `staleness_hours`; otherwise falls back to on-the-fly
+    `importance × exp(-decay_rate × days)`. Mirrors `cypher_effective_weight()`
+    for callers that work on already-fetched rows instead of inside Cypher.
+    """
+    now = now or datetime.now(UTC)
+
+    cached = d.get("effective_weight")
+    swept  = d.get("last_swept_at")
+    if cached is not None and swept is not None:
+        s = swept.to_native() if hasattr(swept, "to_native") else swept
+        if isinstance(s, datetime) and (now - s).total_seconds() < staleness_hours * 3600:
+            return float(cached)
+
+    imp   = (d.get("propagated_confidence")
+             or d.get("importance")
+             or d.get("confidence") or 1.0)
+    rate  = d.get("decay_rate") or 0.008
+    fresh = d.get("freshness")
+    if hasattr(fresh, "to_native"):
+        fresh = fresh.to_native()
+    if not isinstance(fresh, datetime):
+        fresh = now
+    return effective_weight(imp, rate, fresh, now)
+
+
 def cypher_effective_weight(alias: str = "e", *, staleness_hours: int | None = None) -> str:
     """Cypher snippet that returns effective_weight for a Neuron.
 
