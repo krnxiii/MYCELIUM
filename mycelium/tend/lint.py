@@ -140,7 +140,7 @@ async def _signal_health(drv: Neo4jDriver, s: TendSettings) -> list[LintFinding]
         "OPTIONAL MATCH (z:Signal) "
         "  WHERE z.status = 'extracting' "
         "    AND z.created_at IS NOT NULL "
-        "    AND duration.between(z.created_at, datetime()).hours > $hrs "
+        "    AND duration.inSeconds(z.created_at, datetime()).hours > $hrs "
         "RETURN orphan_failed, count(z) AS zombies",
         {"hrs": s.zombie_age_hours},
     ))[0]
@@ -156,7 +156,7 @@ async def _signal_health(drv: Neo4jDriver, s: TendSettings) -> list[LintFinding]
             "MATCH (z:Signal) "
             "WHERE z.status = 'extracting' "
             "  AND z.created_at IS NOT NULL "
-            "  AND duration.between(z.created_at, datetime()).hours > $hrs "
+            "  AND duration.inSeconds(z.created_at, datetime()).hours > $hrs "
             "RETURN z.uuid AS uuid LIMIT 5",
             {"hrs": s.zombie_age_hours},
         )
@@ -194,7 +194,7 @@ async def _stale_sweep(drv: Neo4jDriver, s: TendSettings) -> list[LintFinding]:
         "MATCH (n:Neuron) WHERE n.expired_at IS NULL "
         "WITH count(n) AS total, "
         "  sum(CASE WHEN n.last_swept_at IS NULL "
-        "       OR duration.between(n.last_swept_at, datetime()).hours > $hrs "
+        "       OR duration.inSeconds(n.last_swept_at, datetime()).hours > $hrs "
         "       THEN 1 ELSE 0 END) AS stale "
         "RETURN total, stale",
         {"hrs": s.staleness_hours},

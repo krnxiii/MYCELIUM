@@ -87,17 +87,21 @@ def cypher_effective_weight(alias: str = "e", *, staleness_hours: int | None = N
     Use everywhere decay weight is needed — single source of truth that
     stays consistent as `tend decay_sweep` materializes the value.
     """
+    # NOTE: use duration.inDays(...).days / duration.inSeconds(...).hours.
+    # duration.between(...).days returns only the day-component of a calendar
+    # (months + days) decomposition — it gives 0 for any delta ≥ 1 month, and
+    # .between(...).hours similarly drops the day-part for deltas ≥ 1 day.
     fallback = (
         f"coalesce({alias}.importance, {alias}.confidence) * "
         f"exp(-{alias}.decay_rate * "
-        f"duration.between({alias}.freshness, datetime()).days)"
+        f"duration.inDays({alias}.freshness, datetime()).days)"
     )
     if staleness_hours is None:
         return f"coalesce({alias}.effective_weight, {fallback})"
     return (
         f"CASE WHEN {alias}.effective_weight IS NOT NULL "
         f"  AND {alias}.last_swept_at IS NOT NULL "
-        f"  AND duration.between({alias}.last_swept_at, datetime()).hours "
+        f"  AND duration.inSeconds({alias}.last_swept_at, datetime()).hours "
         f"      < {staleness_hours} "
         f"THEN {alias}.effective_weight ELSE {fallback} END"
     )
