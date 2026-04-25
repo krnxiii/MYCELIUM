@@ -152,7 +152,7 @@ Slash commands that wrap common workflows. Available from any directory in Claud
 
 `/mycelium-distill` — Cleanup run (max 10 actions): merges near-duplicate neurons, rethinks weak neurons with LLM, flags orphans for deletion. Runs `sleep_report` before and after to verify improvement.
 
-`/mycelium-tend` — Maintenance toolkit (no LLM, deterministic): `lint` first to diagnose (structured findings + 0..1 health score), then `tend` to act — recompute decay weights, prune soft-deleted data, reconcile vault, refresh degree. See [docs/MAINTENANCE.md](docs/MAINTENANCE.md) for cron / launchd / systemd recipes.
+`/mycelium-tend` — Maintenance toolkit (no LLM, deterministic): `lint` first to diagnose (structured findings + 0..1 health score), then `tend` to act — recompute decay weights, prune soft-deleted data, reconcile vault, refresh degree. CLI mirrors: `mycelium tend` / `mycelium lint`. Schedule via cron / launchd / systemd — design treats `tend` as an external job, no in-process daemon ships with the product.
 
 `/mycelium-discover` — Pattern discovery (non-destructive, max 10 inferences): clusters neurons into themes via Louvain algorithm, infers hidden cross-cluster connections, surfaces gaps and contradictions. Only adds, never deletes.
 
@@ -227,7 +227,7 @@ Full capabilities exposed via [MCP](https://modelcontextprotocol.io). Call direc
 | `lint` | Read-only structural health check + 0..1 score. Findings by severity (zombies, expired data, stale sweep, duplicates) |
 | `tend` | Run maintenance stages (decay_sweep, prune_dead, vault_compact, centrality_refresh). Idempotent, no LLM. Optionally appends report to `_AGENT/log/` |
 
-CLI mirrors: `mycelium tend [--stage S]... [--dry-run]` and `mycelium lint [--json]`. See [docs/MAINTENANCE.md](docs/MAINTENANCE.md) for cron / launchd / systemd recipes.
+CLI mirrors: `mycelium tend [--stage S]... [--dry-run]` and `mycelium lint [--json]`. `mycelium lint` exits 1 when findings are present — useful for cron / CI gates.
 
 </details>
 
