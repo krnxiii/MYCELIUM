@@ -131,6 +131,8 @@ class TendSettings(BaseModel):
     staleness_hours:         int       = 24       # search falls back to on-read calc when older
     weak_threshold:          float     = 0.05     # decay_sweep marks below this as weak candidate
     sweep_batch_size:        int       = 1000     # nodes per UNWIND batch (avoid huge tx)
+    zombie_age_hours:        int       = 24       # 'extracting' Signals older than this → failed
+    vault_check_graph:       bool      = True     # cross-check vault ↔ graph (slower)
 
 
 class RenderSettings(BaseModel):
