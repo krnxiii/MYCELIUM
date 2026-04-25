@@ -11,6 +11,9 @@ Analyze MYCELIUM knowledge graph health and provide actionable insights.
 2. `list_neurons(sort_by="weight", limit=15)` — strongest knowledge (high weight).
 3. `list_neurons(sort_by="freshness", limit=10)` — most recent activity.
 4. `get_owner()` — personalize the report.
+5. **Maintenance pulse** — peek at `<vault>/_AGENT/log/` for the most recent
+   `*-tend.md` and `*-lint.md`. If absent or older than ~7 days, suggest
+   running `/mycelium-tend`. If recent, summarize what was cleaned.
 
 Note: weakest/fading neurons come from `health()` response (stale list). No separate call needed.
 

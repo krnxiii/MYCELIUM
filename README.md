@@ -152,6 +152,8 @@ Slash commands that wrap common workflows. Available from any directory in Claud
 
 `/mycelium-distill` — Cleanup run (max 10 actions): merges near-duplicate neurons, rethinks weak neurons with LLM, flags orphans for deletion. Runs `sleep_report` before and after to verify improvement.
 
+`/mycelium-tend` — Maintenance toolkit (no LLM, deterministic): `lint` first to diagnose (structured findings + 0..1 health score), then `tend` to act — recompute decay weights, prune soft-deleted data, reconcile vault, refresh degree. See [docs/MAINTENANCE.md](docs/MAINTENANCE.md) for cron / launchd / systemd recipes.
+
 `/mycelium-discover` — Pattern discovery (non-destructive, max 10 inferences): clusters neurons into themes via Louvain algorithm, infers hidden cross-cluster connections, surfaces gaps and contradictions. Only adds, never deletes.
 
 **Setup**
@@ -214,6 +216,18 @@ Full capabilities exposed via [MCP](https://modelcontextprotocol.io). Call direc
 | `detect_communities` | Auto-cluster neurons into thematic groups via Louvain |
 | `sleep_report` | Analyze graph health: weak neurons, near-duplicates, stale data, gaps |
 | `health` | Quick system stats: neuron/synapse counts, Neo4j status |
+
+</details>
+
+<details>
+<summary>Maintenance (v0.5)</summary>
+
+| Tool | Description |
+|------|-------------|
+| `lint` | Read-only structural health check + 0..1 score. Findings by severity (zombies, expired data, stale sweep, duplicates) |
+| `tend` | Run maintenance stages (decay_sweep, prune_dead, vault_compact, centrality_refresh). Idempotent, no LLM. Optionally appends report to `_AGENT/log/` |
+
+CLI mirrors: `mycelium tend [--stage S]... [--dry-run]` and `mycelium lint [--json]`. See [docs/MAINTENANCE.md](docs/MAINTENANCE.md) for cron / launchd / systemd recipes.
 
 </details>
 
@@ -355,7 +369,7 @@ Full graph interface via Telegram — text, voice messages, photos, documents, f
 
 **Two modes:**
 - **Fast mode** — instant commands without AI: `/capture`, `/search`, `/status`, `/today`, `/neurons`, `/domains`, `/abort`, `/level`
-- **Full mode** — free text goes to the same AI agent as Claude Code, with access to all 33 MCP tools
+- **Full mode** — free text goes to the same AI agent as Claude Code, with access to all 35 MCP tools
 
 **Input types:** text, voice (Whisper local or Deepgram), photos, documents (album batching), forwarded messages with source attribution.
 
