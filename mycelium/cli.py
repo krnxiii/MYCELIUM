@@ -549,6 +549,80 @@ def migrate() -> None:
     _run(_go())
 
 
+@app.command("tend")
+def tend_cmd(
+    stage:        list[str] = typer.Option(
+        None, "--stage", "-s",
+        help="Run only these stages (repeatable). Default: all.",
+    ),
+    dry_run:      bool      = typer.Option(False, "--dry-run", help="Compute without writing"),
+    write_report: bool      = typer.Option(
+        True, "--report/--no-report",
+        help="Append markdown report to <vault>/_AGENT/log/",
+    ),
+    json_output:  bool      = typer.Option(False, "--json", help="Print full report as JSON"),
+) -> None:
+    """Run maintenance stages (decay_sweep, prune_dead, vault_compact, centrality_refresh)."""
+    async def _go() -> None:
+        from mycelium.tend import DEFAULT_STAGES, tend
+        from mycelium.tend.report import format_tend, write_log
+
+        s        = load_settings()
+        drv      = Neo4jDriver(s.neo4j)
+        await drv.__aenter__()
+        try:
+            chosen = tuple(stage) if stage else DEFAULT_STAGES
+            report = await tend(drv, settings=s, stages=chosen, dry_run=dry_run)
+
+            if json_output:
+                typer.echo(json.dumps(report.to_dict(), indent=2, default=str))
+            else:
+                typer.echo(format_tend(report))
+
+            if write_report:
+                path = write_log(format_tend(report), vault_root=s.vault.path, kind="tend")
+                typer.echo(f"\nReport written: {path}")
+        finally:
+            await drv.close()
+    _run(_go())
+
+
+@app.command("lint")
+def lint_cmd(
+    write_report: bool = typer.Option(
+        False, "--report",
+        help="Append markdown report to <vault>/_AGENT/log/",
+    ),
+    json_output:  bool = typer.Option(False, "--json", help="Print full report as JSON"),
+) -> None:
+    """Read-only structural maintenance check; outputs a 0..1 health score."""
+    async def _go() -> None:
+        from mycelium.tend import lint
+        from mycelium.tend.report import format_lint, write_log
+
+        s   = load_settings()
+        drv = Neo4jDriver(s.neo4j)
+        await drv.__aenter__()
+        try:
+            report = await lint(drv, settings=s.tend)
+
+            if json_output:
+                typer.echo(json.dumps(report.to_dict(), indent=2, default=str))
+            else:
+                typer.echo(format_lint(report))
+
+            if write_report:
+                path = write_log(format_lint(report), vault_root=s.vault.path, kind="lint")
+                typer.echo(f"\nReport written: {path}")
+
+            # Exit code carries score signal: 0 if pristine, 1 if issues found
+            if report.findings:
+                raise typer.Exit(1)
+        finally:
+            await drv.close()
+    _run(_go())
+
+
 @app.command()
 def compact(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
