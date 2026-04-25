@@ -1,6 +1,9 @@
 # Personal / dev-only (synced locally, not pushed)
 CLAUDE.PERSONAL.md
-docs/
+docs/*
+!docs/README.md
+!docs/ARCHITECTURE.md
+!docs/MAINTENANCE.md
 tests/
 scripts/_personal/
 

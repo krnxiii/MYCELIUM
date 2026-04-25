@@ -66,12 +66,11 @@
 
 ## Архитектура
 
-См. **docs/v2_done/V2_TRANSITION.txt** — архитектурный справочник (v2).
-Архив v1: `docs/v1/` (ARCHITECTURE, CONCEPT, DATABASE_SCHEMA, SYSTEM_INTELLIGENCE).
+См. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — текущий архитектурный справочник.
 
 ```
-Краткая суть (v2):
-  • Episode → Entity → Fact (3 чистых слоя)
+Краткая суть:
+  • Signal → Neuron → Synapse (3 чистых слоя)
   • Decay + consolidation (repetition strengthens memory)
   • Bi-temporal facts (valid_at/invalid_at + created_at/expired_at)
   • Hybrid search (vector + BM25 + BFS → RRF → decay rerank)
@@ -79,8 +78,11 @@
   • Local Vault (SHA-256 addressed file storage)
 ```
 
-**ВАЖНО:** При работе с кодом читай актуальную схему из docs/v2_done/V2_TRANSITION.txt,
+**ВАЖНО:** При работе с кодом читай актуальное состояние из docs/ARCHITECTURE.md,
 не полагайся на этот snapshot. Архитектура эволюционирует.
+
+Исторический план перехода v1→v2 (`docs/v2_done/V2_TRANSITION.txt`)
+и архив v1 (`docs/v1/`) — gitignored, локальная археология.
 
 ---
 
@@ -142,8 +144,10 @@ LIMIT 10;
 
 ## Документация
 
-Навигация по дизайн-документам: [docs/README.md](docs/README.md)
-Архитектурный справочник v2: [docs/v2_done/V2_TRANSITION.txt](docs/v2_done/V2_TRANSITION.txt)
+Навигация по докам: [docs/README.md](docs/README.md) (tracked в репо)
+Архитектура: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (tracked)
+Maintenance toolkit: [docs/MAINTENANCE.md](docs/MAINTENANCE.md) (tracked)
+Roadmap, design drafts, BACKLOG — local-only (см. docs/README.md)
 
 ---
 
@@ -230,7 +234,7 @@ RETURN e.name, e.confidence
 - [ ] Зависимости явные и минимальные
 - [ ] Код компактен (no dead code, no overengineering)
 - [ ] Комментарии только где необходимо
-- [ ] docs/V2_TRANSITION.txt обновлён (если меняем архитектуру)
+- [ ] docs/ARCHITECTURE.md обновлён (если меняем архитектуру)
 
 ---
 
@@ -251,9 +255,9 @@ RETURN e.name, e.confidence
 5. **DELIVERY CHAIN** — новый skill/tool доступен после `make quickstart`?
    Проверь: install.sh, uninstall.sh, Makefile, server.py — всё синхронно?
 
-6. **DONE MEANS MARKED** — реализованная фича помечена [x]/DONE в:
-   docs/BACKLOG.txt, docs/v2_done/COMPETITIVE_FEATURES.txt?
-   Числа в CLAUDE.md актуальны (кол-во tools, skills)?
+6. **DONE MEANS MARKED** — реализованная фича помечена [x]/DONE
+   в локальном `docs/BACKLOG.txt`. Числа в CLAUDE.md и README.md
+   актуальны (кол-во tools, skills)?
 
 7. **SINGLE TRUTH** — код, docs, config, CLAUDE.md говорят одно и то же?
    При расхождении: actual > planned. Обнови все упоминания.
