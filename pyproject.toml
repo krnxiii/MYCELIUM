@@ -1,6 +1,6 @@
 [project]
 name = "mycelium"
-version = "0.5.0"
+version = "0.5.1"
 description = "Distributed OS for collective consciousness"
 license = "MIT"
 requires-python = ">=3.12"

@@ -1,12 +1,12 @@
 """Cypher queries for graph visualization."""
 
+from mycelium.utils.decay import cypher_effective_weight
+
 # ── Graph (full) ─────────────────────────────────────────
 
-GRAPH_NODES = """
+GRAPH_NODES = f"""
 MATCH (e:Neuron)
-WITH e,
-     coalesce(e.importance, e.confidence) * exp(-e.decay_rate *
-       duration.between(e.freshness, datetime()).days) AS ew
+WITH e, {cypher_effective_weight("e")} AS ew
 WHERE ew > 0.05
 RETURN e.uuid          AS id,
        e.name          AS label,
@@ -61,12 +61,10 @@ ORDER BY sig.created_at DESC
 
 # ── Neighbors (expand on double-click) ───────────────────
 
-NEIGHBOR_NODES = """
-MATCH (c:Neuron {uuid: $uuid})-[:SYNAPSE*1..2]-(n:Neuron)
+NEIGHBOR_NODES = f"""
+MATCH (c:Neuron {{uuid: $uuid}})-[:SYNAPSE*1..2]-(n:Neuron)
 WHERE n.uuid <> $uuid
-WITH DISTINCT n,
-     coalesce(n.importance, n.confidence) * exp(-n.decay_rate *
-       duration.between(n.freshness, datetime()).days) AS ew
+WITH DISTINCT n, {cypher_effective_weight("n")} AS ew
 WHERE ew > 0.05
 RETURN n.uuid          AS id,
        n.name          AS label,

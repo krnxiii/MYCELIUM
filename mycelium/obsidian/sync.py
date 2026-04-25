@@ -13,6 +13,7 @@ import structlog
 from mycelium.config import ObsidianSettings
 from mycelium.driver.driver import GraphDriver
 from mycelium.obsidian import frontmatter as fm
+from mycelium.utils.decay import cypher_effective_weight
 from mycelium.obsidian.relations import (
     get_neurons, get_related, get_signal_meta, get_similar,
 )
@@ -617,8 +618,7 @@ async def _project_neurons(
         "  toString(n.expires_at) AS expires_at, "
         "  n.origin AS origin, "
         "  n.attributes AS attributes, "
-        "  coalesce(n.importance, n.confidence) * exp(-n.decay_rate * "
-        "    duration.between(n.freshness, datetime()).days) AS weight, "
+        f"  {cypher_effective_weight('n')} AS weight, "
         "  synapses, sources"
     )
 

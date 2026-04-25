@@ -8,6 +8,7 @@ from pathlib import Path
 import structlog
 
 from mycelium.driver.driver import GraphDriver
+from mycelium.utils.decay import cypher_effective_weight
 from mycelium.vault.storage import VaultStorage
 
 log = structlog.get_logger()
@@ -104,11 +105,12 @@ async def _graph_stats(driver: GraphDriver) -> dict:
 
 
 async def _top_neurons(driver: GraphDriver, limit: int = 15) -> list[dict]:
+    # Helper returns null when both importance & confidence are null; receiver
+    # below maps null → 0 via `r["weight"] or 0`, so the legacy 0.5 default is
+    # not load-bearing — kept null-safe at the Python edge.
     rows = await driver.execute_query(
         "MATCH (n:Neuron) WHERE n.expired_at IS NULL "
-        "WITH n, coalesce(n.importance, n.confidence, 0.5) "
-        "  * exp(-n.decay_rate * "
-        "    duration.between(n.freshness, datetime()).days) AS w "
+        f"WITH n, {cypher_effective_weight('n')} AS w "
         "RETURN n.name AS name, n.neuron_type AS type, "
         "  w AS weight, coalesce(n.confirmations, 0) AS confirmations "
         "ORDER BY w DESC LIMIT $limit",

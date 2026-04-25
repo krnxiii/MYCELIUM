@@ -60,7 +60,7 @@ from mycelium.prompts.summary import build_summary_prompt
 from mycelium.search.config import SearchResults
 from mycelium.search.search import HybridSearch
 from mycelium.utils.chunker import chunk_text
-from mycelium.utils.decay import calc_decay_rate, consolidate
+from mycelium.utils.decay import calc_decay_rate, consolidate, cypher_effective_weight
 from mycelium.core.skills import load_skills, match_skill
 from mycelium.core.telemetry import Telemetry
 from mycelium.utils.dedup import cosine_sim
@@ -942,18 +942,17 @@ class Mycelium:
         if not c.get("neurons"):
             return ""
 
+        ew = cypher_effective_weight("e")
         top = await drv.execute_query(
             "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
-            "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-            "  duration.between(e.freshness, datetime()).days) AS ew "
+            f"WITH e, {ew} AS ew "
             "RETURN e.name AS name, e.neuron_type AS type "
             "ORDER BY ew DESC LIMIT $n",
             {"n": top_n},
         )
         recent = await drv.execute_query(
             "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
-            "WITH e, coalesce(e.importance, e.confidence) * exp(-e.decay_rate * "
-            "  duration.between(e.freshness, datetime()).days) AS ew "
+            f"WITH e, {ew} AS ew "
             "WHERE ew > 0.1 "
             "RETURN e.name AS name, e.neuron_type AS type "
             "ORDER BY e.freshness DESC LIMIT $n",

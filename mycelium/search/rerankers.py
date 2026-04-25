@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
 from mycelium.config import SearchSettings
-from mycelium.utils.decay import effective_weight
+from mycelium.utils.decay import effective_weight_from_data
 
 if TYPE_CHECKING:
     from mycelium.driver.driver import GraphDriver
@@ -69,22 +68,6 @@ def rrf_fuse(
 # ── Helpers ──────────────────────────────────────────────
 
 
-def _to_dt(v: Any) -> datetime:
-    if v is None:
-        return datetime.now(UTC)
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if hasattr(v, "to_native"):
-        return v.to_native()
-    if isinstance(v, str):
-        try:
-            dt = datetime.fromisoformat(v)
-            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-        except ValueError:
-            pass
-    return datetime.now(UTC)
-
-
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     na  = sum(x * x for x in a) ** 0.5
@@ -107,15 +90,8 @@ class DecayReranker:
     ) -> list[tuple[str, float]]:
         out = []
         for uid, score in items:
-            d   = context.neuron_data.get(uid, {})
-            imp = (d.get("propagated_confidence")
-                   or d.get("importance")
-                   or d.get("confidence") or 1.0)
-            ew  = effective_weight(
-                imp,
-                d.get("decay_rate") or 0.008,
-                _to_dt(d.get("freshness")),
-            )
+            d  = context.neuron_data.get(uid, {})
+            ew = effective_weight_from_data(d)
             out.append((uid, score * ew))
         return sorted(out, key=lambda x: x[1], reverse=True)
 
