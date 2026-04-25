@@ -126,6 +126,13 @@ class SummarySettings(BaseModel):
     top_n:                   int       = 20
 
 
+class TendSettings(BaseModel):
+    """Maintenance toolkit (`mycelium tend`) — periodic graph upkeep."""
+    staleness_hours:         int       = 24       # search falls back to on-read calc when older
+    weak_threshold:          float     = 0.05     # decay_sweep marks below this as weak candidate
+    sweep_batch_size:        int       = 1000     # nodes per UNWIND batch (avoid huge tx)
+
+
 class RenderSettings(BaseModel):
     enabled:            bool = False
     host:               str  = "0.0.0.0"
@@ -220,6 +227,7 @@ class Settings(BaseSettings):
     interaction:             InteractionSettings   = InteractionSettings()
     obsidian:                ObsidianSettings      = ObsidianSettings()
     telegram:                TelegramSettings      = TelegramSettings()
+    tend:                    TendSettings          = TendSettings()
 
 
 def load_settings() -> Settings:

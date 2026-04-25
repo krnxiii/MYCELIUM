@@ -41,3 +41,29 @@ def consolidate(
     new_count = confirmations + 1
     new_rate  = calc_decay_rate(new_count, s)
     return new_imp, new_rate, new_count
+
+
+def cypher_effective_weight(alias: str = "e", *, staleness_hours: int | None = None) -> str:
+    """Cypher snippet that returns effective_weight for a Neuron.
+
+    Reads materialized `<alias>.effective_weight` if present and fresh
+    (within staleness_hours), else falls back to on-read calc:
+        importance * exp(-decay_rate * days_since_freshness).
+
+    Use everywhere decay weight is needed — single source of truth that
+    stays consistent as `tend decay_sweep` materializes the value.
+    """
+    fallback = (
+        f"coalesce({alias}.importance, {alias}.confidence) * "
+        f"exp(-{alias}.decay_rate * "
+        f"duration.between({alias}.freshness, datetime()).days)"
+    )
+    if staleness_hours is None:
+        return f"coalesce({alias}.effective_weight, {fallback})"
+    return (
+        f"CASE WHEN {alias}.effective_weight IS NOT NULL "
+        f"  AND {alias}.last_swept_at IS NOT NULL "
+        f"  AND duration.between({alias}.last_swept_at, datetime()).hours "
+        f"      < {staleness_hours} "
+        f"THEN {alias}.effective_weight ELSE {fallback} END"
+    )
