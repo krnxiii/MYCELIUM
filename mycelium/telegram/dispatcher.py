@@ -32,10 +32,9 @@ class ChannelMessage:
 
 @dataclass
 class ChannelReply:
-    text: str                          # plain text (always present)
-    html: str | None         = None    # formatted (channel renders if supported)
-    files: list[Path]        = field(default_factory=list)  # reserved: file attachments
-    is_stream: bool          = False   # True = streaming chunk (use editMessageText)
+    text:  str                          # plain text (always present)
+    html:  str | None  = None           # formatted (channel renders if supported)
+    files: list[Path]  = field(default_factory=list)  # reserved: file attachments
 
 
 class Dispatcher:
@@ -68,10 +67,7 @@ class Dispatcher:
             if ctx:
                 self._agent.set_context(ctx)
         async for chunk in self._agent.run(msg.text, msg.chat_id):
-            yield ChannelReply(
-                text=chunk.text,
-                is_stream=not chunk.is_final,
-            )
+            yield ChannelReply(text=chunk.text)
 
     def is_busy(self) -> bool:
         """Check if agent subprocess is currently running."""

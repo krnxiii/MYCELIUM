@@ -34,7 +34,7 @@ from mycelium.telegram.middleware import (
     TypingKeepAlive,
 )
 from mycelium.telegram.sanitizer import sanitize_html, strip_tags
-from mycelium.telegram.streaming import ProgressIndicator, StreamingDelivery
+from mycelium.telegram.streaming import TelegramRenderer
 from mycelium.telegram.stt import STTProvider, create_stt
 
 log = structlog.get_logger()
@@ -476,31 +476,23 @@ async def _stream_dispatch(
     dispatcher: Dispatcher,
     text:       str,
 ) -> None:
-    """Stream agent response with progress indicator."""
+    """Stream agent response into chat via declarative renderer."""
     if not message.bot:
         return
     async with TypingKeepAlive(message):
-        progress = ProgressIndicator(message.bot, message.chat.id)
-        await progress.start()
-        stream      = StreamingDelivery(message.bot, message.chat.id)
+        renderer    = TelegramRenderer(message.bot, message.chat.id)
         channel_msg = ChannelMessage(text=text, chat_id=str(message.chat.id))
-        last_text     = ""
-        first_content = True
+        await renderer.show_progress()
+        last_text = ""
         try:
             async for reply in dispatcher.dispatch(channel_msg):
-                if first_content:
-                    await progress.stop()
-                    first_content = False
-                if reply.is_stream:
-                    await stream.update(reply.text)
-                else:
-                    await stream.finalize(reply.text)
+                await renderer.render(reply.text)
                 last_text = reply.text
         finally:
-            if first_content:
-                await progress.stop()
-        if last_text:
-            await stream.finalize(last_text)
+            if last_text:
+                await renderer.render(last_text, force=True)
+            else:
+                await renderer.close()
 
 
 # ── Reply delivery with fallback chain ──────────────────────────────
