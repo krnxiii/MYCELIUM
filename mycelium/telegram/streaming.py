@@ -1,10 +1,11 @@
-"""Streaming delivery: progressive editMessageText for Telegram."""
+"""Declarative Telegram renderer: idempotent state→chat reconciliation."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass
 
 import structlog
 from aiogram import Bot
@@ -16,166 +17,159 @@ MAX_MESSAGE_LEN   = 4096
 MIN_INITIAL_CHARS = 30
 EDIT_THROTTLE_SEC = 1.0
 EMOJI_THINKING    = "\U0001f914"  # 🤔
-_BRAILLE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_BRAILLE          = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_PROGRESS_TICK    = 5.0  # seconds between spinner updates
 
 
-class ProgressIndicator:
-    """Show elapsed time message until first content arrives."""
+@dataclass
+class _Chunk:
+    msg_id: int
+    text:   str   # invariant: this is the text currently in Telegram for msg_id
+
+
+class TelegramRenderer:
+    """Declarative renderer: `render(text)` reconciles chat to match `text`.
+
+    State: list of rendered Telegram messages (one per ≤4096-char chunk).
+    Invariant: after render(T), chat contains _split_text(T) verbatim.
+    Idempotency: render(T); render(T) makes 0 extra API calls.
+
+    Throttling: edits to existing chunks are throttled to one per
+    EDIT_THROTTLE_SEC. New chunk sends are never throttled (new content,
+    not spam). Pass force=True for the final flush to bypass throttle.
+    """
 
     def __init__(self, bot: Bot, chat_id: int) -> None:
-        self._bot     = bot
-        self._chat_id = chat_id
-        self._msg_id: int | None = None
-        self._task: asyncio.Task | None = None
-        self._start   = 0.0
-        self._tick_i  = 0
+        self._bot           = bot
+        self._chat_id       = chat_id
+        self._chunks:        list[_Chunk]               = []
+        self._last_edit_at:  float                      = 0.0
+        self._progress_id:   int | None                 = None
+        self._progress_task: asyncio.Task[None] | None  = None
+        self._progress_start: float                     = 0.0
 
-    async def start(self) -> None:
-        msg = await self._bot.send_message(
-            self._chat_id, f"{EMOJI_THINKING} thinking {_BRAILLE[0]}")
-        self._msg_id = msg.message_id
-        self._start  = time.monotonic()
-        self._task   = asyncio.create_task(self._tick())
+    # ── Progress indicator (folded in) ──────────────────────────────
+
+    async def show_progress(self) -> None:
+        """Show 'thinking' indicator. Idempotent: no-op if already shown
+        or if any content has been rendered."""
+        if self._chunks or self._progress_id is not None:
+            return
+        try:
+            msg = await self._bot.send_message(
+                self._chat_id, f"{EMOJI_THINKING} thinking {_BRAILLE[0]}",
+            )
+        except Exception as e:
+            log.warning("renderer.progress_send_failed", error=str(e))
+            return
+        self._progress_id    = msg.message_id
+        self._progress_start = time.monotonic()
+        self._progress_task  = asyncio.create_task(self._tick())
 
     async def _tick(self) -> None:
+        i = 0
         try:
             while True:
-                await asyncio.sleep(5)
-                self._tick_i += 1
-                elapsed = int(time.monotonic() - self._start)
-                spin = _BRAILLE[self._tick_i % len(_BRAILLE)]
-                try:
+                await asyncio.sleep(_PROGRESS_TICK)
+                i += 1
+                elapsed = int(time.monotonic() - self._progress_start)
+                spin    = _BRAILLE[i % len(_BRAILLE)]
+                with contextlib.suppress(Exception):
                     await self._bot.edit_message_text(
                         f"{EMOJI_THINKING} thinking {spin} [{elapsed}s]",
                         chat_id=self._chat_id,
-                        message_id=self._msg_id,
+                        message_id=self._progress_id,
                     )
-                except Exception:
-                    pass
         except asyncio.CancelledError:
             pass
 
-    async def stop(self) -> int | None:
-        """Stop timer, delete progress message. Returns deleted msg_id."""
-        if self._task:
-            self._task.cancel()
+    async def _stop_progress(self) -> None:
+        """Cancel tick task and delete progress message. Idempotent."""
+        if self._progress_task:
+            self._progress_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-        if self._msg_id:
-            try:
-                await self._bot.delete_message(self._chat_id, self._msg_id)
-            except Exception:
-                pass
-            return self._msg_id
-        return None
+                await self._progress_task
+            self._progress_task = None
+        if self._progress_id is not None:
+            with contextlib.suppress(Exception):
+                await self._bot.delete_message(self._chat_id, self._progress_id)
+            self._progress_id = None
 
+    # ── Render ──────────────────────────────────────────────────────
 
-class StreamingDelivery:
-    """Buffer agent chunks, deliver via sendMessage + editMessageText."""
+    async def render(self, text: str, *, force: bool = False) -> None:
+        """Reconcile chat to match `text`.
 
-    def __init__(self, bot: Bot, chat_id: int) -> None:
-        self._bot     = bot
-        self._chat_id = chat_id
-        self._msg_id: int | None = None
-        self._last_edit_at = 0.0
-        self._last_text    = ""
-        self._overflow: list[int] = []  # message_ids for overflow messages
-
-    async def update(self, text: str) -> None:
-        """Push new accumulated text. Sends or edits as needed."""
-        if not text or text == self._last_text:
+        force=True bypasses throttle and the MIN_INITIAL_CHARS gate
+        (use for the final flush after streaming ends).
+        """
+        if not text:
+            return
+        desired = _split_text(text, MAX_MESSAGE_LEN)
+        if not desired:
             return
 
-        # First message: wait for minimum chars
-        if self._msg_id is None:
-            if len(text) < MIN_INITIAL_CHARS:
-                return
-            await self._send_initial(text)
+        # Avoid posting a near-empty first message that gets immediately edited.
+        if not self._chunks and not force and len(text) < MIN_INITIAL_CHARS:
             return
 
-        # Throttle edits
-        now = time.monotonic()
-        if now - self._last_edit_at < EDIT_THROTTLE_SEC:
-            return
+        # First content arriving — replace progress spinner.
+        if not self._chunks:
+            await self._stop_progress()
 
-        # During streaming, truncate to limit — finalize() handles overflow
-        if len(text) > MAX_MESSAGE_LEN:
-            await self._edit(text[:MAX_MESSAGE_LEN])
-            return
+        now      = time.monotonic()
+        can_edit = force or (now - self._last_edit_at) >= EDIT_THROTTLE_SEC
 
-        await self._edit(text)
+        for i, want in enumerate(desired):
+            if i < len(self._chunks):
+                if self._chunks[i].text == want:
+                    continue                        # already in sync
+                if not can_edit:
+                    continue                        # throttled; state stays stale
+                if await self._edit(self._chunks[i].msg_id, want):
+                    self._chunks[i].text = want
+                    self._last_edit_at   = now
+            else:
+                msg_id = await self._send(want)
+                if msg_id is not None:
+                    self._chunks.append(_Chunk(msg_id=msg_id, text=want))
+                    self._last_edit_at = now      # arm throttle from first send
 
-    async def finalize(self, text: str) -> None:
-        """Send final version of the text."""
-        if not text or text == self._last_text:
-            return
+    async def close(self) -> None:
+        """Cleanup if no content was ever rendered (kill spinner)."""
+        if not self._chunks:
+            await self._stop_progress()
 
-        if self._msg_id is None:
-            # Never sent anything — send as single message
-            for chunk in _split_text(text, MAX_MESSAGE_LEN):
-                await self._send_plain(chunk)
-            self._last_text = text
-            return
+    # ── Telegram primitives ─────────────────────────────────────────
 
-        # Final edit with full text
-        if len(text) > MAX_MESSAGE_LEN:
-            await self._handle_overflow(text)
-        elif text != self._last_text:
-            await self._edit(text)
-
-    async def _send_initial(self, text: str) -> None:
-        """Send first message."""
+    async def _send(self, text: str) -> int | None:
         try:
-            msg = await self._bot.send_message(
-                self._chat_id,
-                text[:MAX_MESSAGE_LEN],
-            )
-            self._msg_id = msg.message_id
-            self._last_text = text[:MAX_MESSAGE_LEN]
-            self._last_edit_at = time.monotonic()
+            msg = await self._bot.send_message(self._chat_id, text)
+            return msg.message_id
         except Exception as e:
-            log.warning("streaming.send_failed", error=str(e))
+            log.warning("renderer.send_failed", error=str(e))
+            return None
 
-    async def _edit(self, text: str) -> None:
-        """Edit current message with new text."""
+    async def _edit(self, msg_id: int, text: str) -> bool:
         try:
             await self._bot.edit_message_text(
                 text=text,
                 chat_id=self._chat_id,
-                message_id=self._msg_id,
+                message_id=msg_id,
             )
-            self._last_text = text
-            self._last_edit_at = time.monotonic()
+            return True
         except Exception as e:
             err = str(e)
-            # "message is not modified" is expected (duplicate edit)
-            if "not modified" not in err.lower():
-                log.warning("streaming.edit_failed", error=err)
-
-    async def _send_plain(self, text: str) -> None:
-        """Send a new plain message (for overflow/fallback)."""
-        try:
-            msg = await self._bot.send_message(self._chat_id, text)
-            self._overflow.append(msg.message_id)
-        except Exception as e:
-            log.warning("streaming.overflow_send_failed", error=str(e))
-
-    async def _handle_overflow(self, text: str) -> None:
-        """Text exceeds 4096 — edit current msg with first part, send rest."""
-        # Edit current message with first chunk
-        first = text[:MAX_MESSAGE_LEN]
-        if first != self._last_text:
-            await self._edit(first)
-
-        # Send remaining as new messages
-        remaining = text[MAX_MESSAGE_LEN:]
-        for chunk in _split_text(remaining, MAX_MESSAGE_LEN):
-            await self._send_plain(chunk)
-            await asyncio.sleep(0.3)  # avoid rate limit
+            if "not modified" in err.lower():
+                # State drift: chat already has this text. Treat as success
+                # so the caller can sync local state.
+                return True
+            log.warning("renderer.edit_failed", error=err, msg_id=msg_id)
+            return False
 
 
 def _split_text(text: str, limit: int) -> list[str]:
-    """Split text at paragraph boundaries."""
+    """Split text at paragraph boundaries (≤ limit chars per chunk)."""
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []

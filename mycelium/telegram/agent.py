@@ -37,10 +37,9 @@ _SYSTEM_PROMPT = (
 
 @dataclass
 class AgentChunk:
-    """One piece of agent output for streaming delivery."""
-    text:       str            # accumulated text so far (not delta)
-    delta:      str  = ""      # new text since last chunk
-    is_final:   bool = False
+    """One snapshot of agent output. `text` is the full accumulated text;
+    the renderer reconciles state and computes its own diff."""
+    text:       str
     session_id: str  = ""
     usage:      dict = field(default_factory=dict)
 
@@ -118,10 +117,7 @@ class AgentProcess:
                 limit=32 * 1024 * 1024,
             )
         except FileNotFoundError:
-            yield AgentChunk(
-                text="Claude CLI not found in container.",
-                is_final=True,
-            )
+            yield AgentChunk(text="Claude CLI not found in container.")
             return
 
         # Send prompt (with system prompt on first call, bare on resume)
@@ -147,8 +143,9 @@ class AgentProcess:
         stderr_task = asyncio.create_task(_drain_stderr())
 
         # Stream NDJSON events
-        prev_text = ""
+        prev_text      = ""
         new_session_id = ""
+        yielded_final  = False
         assert self._process.stdout is not None
 
         try:
@@ -179,11 +176,9 @@ class AgentProcess:
                         if block.get("type") == "text":
                             cur_text = block["text"]
                             if cur_text != prev_text:
-                                delta = cur_text[len(prev_text):]
                                 prev_text = cur_text
                                 yield AgentChunk(
                                     text=cur_text,
-                                    delta=delta,
                                     session_id=new_session_id,
                                 )
 
@@ -194,18 +189,15 @@ class AgentProcess:
                     # Handle max_turns error gracefully
                     if subtype == "error_max_turns" and not result_text:
                         result_text = prev_text or "Reached turn limit. Try a simpler question."
-                    if result_text and result_text != prev_text:
-                        delta = result_text[len(prev_text):]
-                        prev_text = result_text
-                    else:
-                        delta = ""
+                    final_text = result_text or prev_text
+                    if final_text and final_text != prev_text:
+                        prev_text = final_text
                     yield AgentChunk(
-                        text=result_text or prev_text,
-                        delta=delta,
-                        is_final=True,
+                        text=final_text,
                         session_id=new_session_id,
                         usage=usage,
                     )
+                    yielded_final = True
 
         except Exception:
             if self._process.returncode is None:
@@ -223,9 +215,11 @@ class AgentProcess:
             log.info("agent.done", chat_id=chat_id, session_id=new_session_id[:8],
                      response_len=len(prev_text))
 
-        # If we got here without yielding a final chunk
-        if prev_text:
-            yield AgentChunk(text=prev_text, is_final=True)
+        # Fallback: process exited without a `result` event. Yield whatever
+        # text we accumulated so the renderer has a final state to show.
+        if not yielded_final and prev_text:
+            yield AgentChunk(text=prev_text, session_id=new_session_id)
+            yielded_final = True
 
         # Check for errors
         if self._process.returncode and self._process.returncode != 0:
@@ -235,16 +229,10 @@ class AgentProcess:
             # Session expired — clear and let next message start fresh
             if _is_session_error(stderr_text):
                 self._sessions.pop(chat_id, None)
-                if not prev_text:
-                    yield AgentChunk(
-                        text="Session expired. Send your message again.",
-                        is_final=True,
-                    )
-            elif not prev_text:
-                yield AgentChunk(
-                    text=f"Agent error: {stderr_text[:200]}",
-                    is_final=True,
-                )
+                if not yielded_final:
+                    yield AgentChunk(text="Session expired. Send your message again.")
+            elif not yielded_final:
+                yield AgentChunk(text=f"Agent error: {stderr_text[:200]}")
 
     def abort(self) -> bool:
         """Kill current subprocess. Returns True if killed."""
