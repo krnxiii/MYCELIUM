@@ -54,8 +54,9 @@ MIGRATED=$(docker exec mycelium-app sh -c '
             [ -f "$f" ] || continue
             name=$(basename "$f")
             if ! grep -qFx "$name" /tmp/bundled-skills.txt 2>/dev/null; then
-                # cp -n: do not overwrite existing user files (idempotent)
-                if cp -n "$f" /root/.mycelium/skills/extraction/ 2>/dev/null; then
+                # Skip if user copy already exists (idempotent — do not overwrite).
+                if [ ! -e /root/.mycelium/skills/extraction/"$name" ]; then
+                    cp "$f" /root/.mycelium/skills/extraction/
                     count=$((count + 1))
                     echo "  migrated: $name" >&2
                 fi
