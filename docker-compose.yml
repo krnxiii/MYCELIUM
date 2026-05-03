@@ -59,6 +59,10 @@ services:
       MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
       MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
+    volumes:
+      # User-data: vault, domains, skills, logs, .env, gate flags.
+      # Persistent across container rebuilds.
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}:/root/.mycelium
     depends_on:
       neo4j:
         condition: service_healthy

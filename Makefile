@@ -1,4 +1,4 @@
-.PHONY: install install-full up down reset quickstart quickstart-app quickstart-docker quickstart-vps vps-up vps-down vps-telegram mcp-install-remote test test-unit test-semantic bench lint mcp-server mcp-install mcp-install-http mcp-gate-init mcp-skills-install mcp-rules-install serve telegram render clean uninstall
+.PHONY: install install-full up down reset quickstart quickstart-app quickstart-docker quickstart-vps vps-up vps-down vps-telegram mcp-install-remote test test-unit test-semantic bench lint mcp-server mcp-install mcp-install-http mcp-gate-init mcp-skills-install mcp-rules-install migrate-user-data serve telegram render clean uninstall
 
 # ── Installation ────────────────────────────────────────────────
 #
@@ -129,9 +129,16 @@ mcp-install-http:
 	fi
 
 mcp-gate-init:
-	@mkdir -p ~/.mycelium
+	@mkdir -p ~/.mycelium ~/.mycelium/domains ~/.mycelium/skills/extraction ~/.mycelium/logs
 	@touch ~/.mycelium/.read_enabled
-	@echo "Gate init: ~/.mycelium/.read_enabled created (read=on, write=off)"
+	@echo "User-data init: ~/.mycelium/{domains,skills,logs} ready, gate read=on (write=off)"
+
+# ── Data migration (existing deployments only) ──────────────────
+# Move runtime-saved skills out of /app/mycelium/skills/extraction/
+# (where they were ephemerally lost on rebuild) into the new persistent
+# user dir ~/.mycelium/skills/extraction/. Idempotent.
+migrate-user-data:
+	@bash scripts/migrate-skills.sh
 
 mcp-skills-install:
 	@for skill in mycelium-on mycelium-off mycelium-ingest mycelium-recall mycelium-reflect mycelium-distill mycelium-discover; do \

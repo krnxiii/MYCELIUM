@@ -39,6 +39,13 @@ step "Pulling latest code"
 git pull --ff-only origin main
 echo
 
+# ── Migrate runtime-saved skills (idempotent) ───────────────────
+# Container rebuild wipes /app/mycelium/skills/extraction/. Move any
+# user-saved skills out to the persistent ~/.mycelium/skills/extraction/
+# BEFORE rebuilding, so they survive.
+step "Migrating user data (idempotent)"
+bash scripts/migrate-skills.sh
+
 # ── Build ───────────────────────────────────────────────────────
 step "Rebuilding containers"
 "${COMPOSE_CMD[@]}" build

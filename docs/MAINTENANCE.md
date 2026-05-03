@@ -150,6 +150,46 @@ MYCELIUM_TEND__ZOMBIE_AGE_HOURS=24     # extracting → failed cutoff
 MYCELIUM_TEND__VAULT_CHECK_GRAPH=true  # cross-check vault ↔ graph
 ```
 
+## Backup, sync, and persistence
+
+User data lives under `~/.mycelium/` (overridable via `MYCELIUM_DATA_DIR`). Container deployments mount this directory wholesale into `mycelium-app` and `mycelium-telegram` at `/root/.mycelium/`, so anything you put there survives `docker compose build`.
+
+### What to back up
+
+| Path | Back up? | Notes |
+|------|----------|-------|
+| `vault/` | yes | knowledge files, owns provenance |
+| `domains/` | yes | domain blueprints (your taxonomy) |
+| `skills/extraction/` | yes | user-saved extraction skills |
+| `.env` | yes | secrets and per-host config |
+| `neo4j/data/` | yes | the graph itself |
+| `models/` | optional | re-downloadable from HF |
+| `logs/` | no | derived |
+| `syncthing/` | no | regenerated on first run |
+
+### Cross-device sync (Mac ↔ VPS)
+
+The VPS compose ships a `syncthing` service. By default it syncs only `vault/`. To get full personal-config parity across devices, add two more folders in the syncthing UI (port 8384, reachable via Tailscale):
+
+```
+~/.mycelium/domains/             ↔  ~/.mycelium/domains/
+~/.mycelium/skills/extraction/   ↔  ~/.mycelium/skills/extraction/
+```
+
+Optional: `.env` (careful — it contains secrets; only sync between trusted devices).
+
+After this, editing a blueprint or skill on the laptop propagates to the VPS within seconds, and `load_skills()` / `load_domains()` hot-reload on next call.
+
+### Migrating from older versions
+
+If you upgraded from a version where `save_extraction_skill` wrote into `mycelium/skills/extraction/` (mixed with bundled defaults, lost on rebuild), run the migration once:
+
+```sh
+make migrate-user-data
+```
+
+It uses `git ls-files` to identify bundled skills, copies the rest from the running container into `~/.mycelium/skills/extraction/`, and is idempotent (safe to re-run). `make update` calls this automatically before rebuilding containers.
+
 ## Why no daemon?
 
 By design. Daemons are a deployment concern, not a product feature:
