@@ -39,6 +39,14 @@ step "Pulling latest code"
 git pull --ff-only origin main
 echo
 
+# ── Migrate runtime-saved user data (idempotent) ────────────────
+# Old layout had skills baked into image and domains/.env in container-
+# internal /root/.mycelium/. Both are about to be masked by the new
+# ~/.mycelium volume mount. Copy them to the persistent host dir BEFORE
+# rebuilding, so they survive.
+step "Migrating user data (idempotent)"
+bash scripts/migrate-user-data.sh
+
 # ── Build ───────────────────────────────────────────────────────
 step "Rebuilding containers"
 "${COMPOSE_CMD[@]}" build

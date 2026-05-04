@@ -102,6 +102,37 @@ vault/
 
 `_SKIP_PREFIXES = (".", "_")` — directories starting with `.` or `_` are skipped by obsidian sync, never re-ingested into the graph. This protects `_AGENT/` (and the planned `_WIKI/` for R9) from causing recursion.
 
+## User data layout
+
+Everything under `~/.mycelium/` (overridable via `MYCELIUM_DATA_DIR`) is **user data** — persistent across container rebuilds, syncable across devices. This is the canonical convention; new modules that need to persist state should put it here, not in source-tree paths.
+
+```
+~/.mycelium/
+├── vault/                      knowledge files (CORTEX, NEURONS, _AGENT)
+├── domains/                    domain blueprint YAMLs (one per domain)
+├── skills/extraction/          user-saved extraction skills (.md)
+├── logs/                       runtime logs
+├── neo4j/                      graph database files (mounted into neo4j container)
+├── models/                     embedding/whisper model caches
+├── syncthing/                  syncthing config
+├── .env                        global user config (highest priority in env-chain)
+├── .read_enabled               MCP gate flag (read tools)
+└── .write_enabled              MCP gate flag (write tools, default OFF)
+```
+
+**Container deployments** mount the entire `~/.mycelium/` host directory into the `mycelium-app` and `mycelium-telegram` containers at `/root/.mycelium/`. A single mount covers all user data — adding new subdirs auto-persists without compose changes.
+
+**Extraction skills** are dual-rooted to separate bundled defaults (in source tree) from user-saved (in user data dir):
+
+| Path | Role | Lifecycle |
+|------|------|-----------|
+| `mycelium/skills/extraction/` | bundled defaults (Book, Medical, …) | shipped with the image, read-only at runtime |
+| `~/.mycelium/skills/extraction/` | user-saved (via `save_extraction_skill`) | persistent, syncable, overrides bundled by name |
+
+`load_skills()` merges both dirs; `save_skill()` always writes to the user dir. To override a bundled skill, save one with the same name — the user copy wins.
+
+**Sync model** — vault, domains, and skills should be added to syncthing for cross-device parity (Mac ↔ VPS). Models, neo4j, and syncthing internals stay device-local. See [MAINTENANCE.md](MAINTENANCE.md) for setup.
+
 ## Maintenance toolkit (v0.5.0)
 
 Diagnose ↔ fix pair:

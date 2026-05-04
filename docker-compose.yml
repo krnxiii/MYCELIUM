@@ -59,11 +59,17 @@ services:
       MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
       MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
+    volumes:
+      # User-data: vault, domains, skills, logs, .env, gate flags.
+      # Persistent across container rebuilds.
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}:/root/.mycelium
     depends_on:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9631/mcp"]
+      # MCP returns 406 on plain GET (FastMCP requires SSE Accept header) —
+      # treat as alive. Mirrors docker-compose.vps.yml pattern (without auth).
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' http://localhost:9631/mcp | grep -qE '200|406'"]
       interval: 10s
       timeout: 5s
       retries: 5

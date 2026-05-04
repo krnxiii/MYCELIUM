@@ -126,13 +126,18 @@ remove_data() {
     fi
 
     # Show what exists
-    local has_neo4j=false has_vault=false has_syncthing=false has_other=false
-    [[ -d "$MYCELIUM_DIR/neo4j" ]]    && has_neo4j=true
-    [[ -d "$MYCELIUM_DIR/vault" ]]     && has_vault=true
-    [[ -d "$MYCELIUM_DIR/syncthing" ]] && has_syncthing=true
+    local has_neo4j=false has_vault=false has_syncthing=false
+    local has_domains=false has_skills=false
+    [[ -d "$MYCELIUM_DIR/neo4j" ]]              && has_neo4j=true
+    [[ -d "$MYCELIUM_DIR/vault" ]]              && has_vault=true
+    [[ -d "$MYCELIUM_DIR/syncthing" ]]          && has_syncthing=true
+    [[ -d "$MYCELIUM_DIR/domains" ]]            && has_domains=true
+    [[ -d "$MYCELIUM_DIR/skills" ]]             && has_skills=true
 
-    $has_neo4j    && info "  neo4j/     — graph database"
-    $has_vault    && info "  vault/     — knowledge files (Obsidian notes)"
+    $has_neo4j     && info "  neo4j/     — graph database"
+    $has_vault     && info "  vault/     — knowledge files (Obsidian notes)"
+    $has_domains   && info "  domains/   — domain blueprints"
+    $has_skills    && info "  skills/    — user extraction skills"
     $has_syncthing && info "  syncthing/ — sync configuration"
 
     echo
@@ -163,6 +168,22 @@ remove_data() {
         esac
     fi
 
+    if $has_domains; then
+        answer="$(ask "Delete domain blueprints (domains/)?" "n")"
+        case "$answer" in
+            [yY]*) rm -rf "$MYCELIUM_DIR/domains"; success "Domain blueprints removed" ;;
+            *)     warn "Kept domain blueprints" ;;
+        esac
+    fi
+
+    if $has_skills; then
+        answer="$(ask "Delete user extraction skills (skills/)?" "n")"
+        case "$answer" in
+            [yY]*) rm -rf "$MYCELIUM_DIR/skills"; success "User skills removed" ;;
+            *)     warn "Kept user skills" ;;
+        esac
+    fi
+
     if $has_syncthing; then
         answer="$(ask "Delete Syncthing config?" "y")"
         case "$answer" in
@@ -173,7 +194,7 @@ remove_data() {
 
     # Remaining files (gate flags, logs, etc.)
     local remaining
-    remaining="$(ls -A "$MYCELIUM_DIR" 2>/dev/null | grep -vE '^(neo4j|vault|syncthing)$' || true)"
+    remaining="$(ls -A "$MYCELIUM_DIR" 2>/dev/null | grep -vE '^(neo4j|vault|syncthing|domains|skills)$' || true)"
     if [[ -n "$remaining" ]]; then
         for item in $remaining; do
             rm -rf "${MYCELIUM_DIR:?}/$item"

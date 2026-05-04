@@ -150,6 +150,52 @@ MYCELIUM_TEND__ZOMBIE_AGE_HOURS=24     # extracting → failed cutoff
 MYCELIUM_TEND__VAULT_CHECK_GRAPH=true  # cross-check vault ↔ graph
 ```
 
+## Backup, sync, and persistence
+
+User data lives under `~/.mycelium/` (overridable via `MYCELIUM_DATA_DIR`). Container deployments mount this directory wholesale into `mycelium-app` and `mycelium-telegram` at `/root/.mycelium/`, so anything you put there survives `docker compose build`.
+
+### What to back up
+
+| Path | Back up? | Notes |
+|------|----------|-------|
+| `vault/` | yes | knowledge files, owns provenance |
+| `domains/` | yes | domain blueprints (your taxonomy) |
+| `skills/extraction/` | yes | user-saved extraction skills |
+| `.env` | yes | secrets and per-host config |
+| `neo4j/data/` | yes | the graph itself |
+| `models/` | optional | re-downloadable from HF |
+| `logs/` | no | derived |
+| `syncthing/` | no | regenerated on first run |
+
+### Cross-device sync (Mac ↔ VPS)
+
+The VPS compose ships a `syncthing` service. By default it syncs only `vault/`. To get full personal-config parity across devices, add two more folders in the syncthing UI (port 8384, reachable via Tailscale):
+
+```
+~/.mycelium/domains/             ↔  ~/.mycelium/domains/
+~/.mycelium/skills/extraction/   ↔  ~/.mycelium/skills/extraction/
+```
+
+Optional: `.env` (careful — it contains secrets; only sync between trusted devices).
+
+After this, editing a blueprint or skill on the laptop propagates to the VPS within seconds, and `load_skills()` / `load_domains()` hot-reload on next call.
+
+### Migrating from older versions
+
+If you upgraded from a version that stored user data inside the container (skills baked into the image, domain blueprints in `/root/.mycelium/domains/`, `.env` written by the telegram setup wizard), run the migration once before rebuilding:
+
+```sh
+make migrate-user-data
+```
+
+It copies three classes of at-risk data out of the running container and onto the host volume:
+
+1. **User extraction skills** — anything in `/app/mycelium/skills/extraction/` not tracked in git (bundled defaults are skipped).
+2. **Domain blueprints** — every YAML in `/root/.mycelium/domains/`.
+3. **`.env`** — only if the container has one and the host doesn't.
+
+Idempotent: existing host-side files are never overwritten. `make update` runs this automatically before rebuilding, so a vanilla `git pull && make update` upgrade is safe.
+
 ## Why no daemon?
 
 By design. Daemons are a deployment concern, not a product feature:

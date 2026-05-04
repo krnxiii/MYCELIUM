@@ -54,7 +54,9 @@ services:
       MYCELIUM_OBSIDIAN__ENABLED: ${MYCELIUM_OBSIDIAN__ENABLED:-true}
       MYCELIUM_OBSIDIAN__PROJECT_NEURONS: ${MYCELIUM_OBSIDIAN__PROJECT_NEURONS:-true}
     volumes:
-      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/root/.mycelium/vault
+      # Single user-data mount: vault, domains, skills, logs, .env, gate flags
+      # Anything under ~/.mycelium/ is persisted across rebuilds.
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}:/root/.mycelium
       - tg_uploads:/tmp/tg-uploads
       - ~/.claude:/root/.claude:ro
       - ~/.claude.json:/root/.claude.json:ro
@@ -87,6 +89,9 @@ services:
       MYCELIUM_TELEGRAM__STT_LANGUAGE: ${MYCELIUM_TELEGRAM__STT_LANGUAGE:-auto}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     volumes:
+      # Shared user-data: telegram bot reads/writes ~/.mycelium/.env
+      # and shares vault/domains/skills with mycelium-app.
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}:/root/.mycelium
       - tg_uploads:/tmp/tg-uploads
       - ~/.claude:/root/.claude
       - ~/.claude.json:/root/.claude.json
