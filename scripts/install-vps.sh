@@ -437,7 +437,8 @@ deploy() {
 
     # Create directories for bind mounts
     local data_dir="${MYCELIUM_DATA_DIR:-$HOME/.mycelium}"
-    mkdir -p "$data_dir/syncthing" "$data_dir/vault"
+    mkdir -p "$data_dir/syncthing" "$data_dir/vault" \
+             "$data_dir/domains" "$data_dir/skills/extraction"
 
     local compose_cmd="docker compose -f $COMPOSE_FILE"
     [[ "$emb_mode" == "2" ]]    && compose_cmd="$compose_cmd --profile full"

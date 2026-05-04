@@ -6,8 +6,20 @@ trap 'kill $(jobs -p) 2>/dev/null; printf "\033[?25h" >&2' EXIT INT TERM
 CYAN='\033[0;36m'; BCYAN='\033[1;36m'; GREEN='\033[0;32m'; BGREEN='\033[1;32m'
 YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
-VAULT_DIR="$HOME/.mycelium/vault"
+MYCELIUM_DIR="$HOME/.mycelium"
+VAULT_DIR="$MYCELIUM_DIR/vault"
+DOMAINS_DIR="$MYCELIUM_DIR/domains"
+SKILLS_DIR="$MYCELIUM_DIR/skills/extraction"
 GITHUB_RAW="https://raw.githubusercontent.com/krnxiii/MYCELIUM/main"
+
+# Syncable folder spec: id|label|local_host_path|vps_container_path
+# Each line is the contract between Mac syncthing (host paths) and VPS
+# syncthing (paths inside container, see docker-compose.vps.yml).
+SYNC_FOLDERS=(
+    "mycelium-vault|MYCELIUM Vault|$VAULT_DIR|/var/syncthing/vault"
+    "mycelium-domains|MYCELIUM Domains|$DOMAINS_DIR|/var/syncthing/domains"
+    "mycelium-skills|MYCELIUM Skills|$SKILLS_DIR|/var/syncthing/skills"
+)
 
 # ── Helpers ─────────────────────────────────────────────────────────
 success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
@@ -141,7 +153,7 @@ collect_vps_info() {
     fi
 
     printf "\n"
-    SYNCTHING_DEVICE_ID="$(ask "Sync ID (empty to skip vault sync)" "")"
+    SYNCTHING_DEVICE_ID="$(ask "Sync ID (empty to skip sync setup)" "")"
     hint "'Sync ID' from the VPS installer summary"
 
     SYNCTHING_API_KEY=""
@@ -318,10 +330,10 @@ RULES
     fi
 }
 
-# ── Step 5: Setup Syncthing Vault Sync ──────────────────────────────
+# ── Step 5: Setup Syncthing (vault + domains + skills) ───────────────
 setup_syncthing() {
     if [[ -z "$SYNCTHING_DEVICE_ID" ]]; then
-        hint "Vault sync skipped (no Device ID provided)"
+        hint "Sync skipped (no Device ID provided)"
         return
     fi
 
@@ -372,8 +384,8 @@ setup_syncthing() {
             ;;
     esac
 
-    # Create vault directory
-    mkdir -p "$VAULT_DIR"
+    # Create local sync directories (one per syncable class)
+    mkdir -p "$VAULT_DIR" "$DOMAINS_DIR" "$SKILLS_DIR"
 
     # Find Syncthing API key
     local config_file=""
@@ -441,16 +453,18 @@ sys.exit(0 if os.environ['_ST_DEV_ID'] in ids else 1)
             || { warn "Failed to add VPS device locally"; _show_manual_syncthing_instructions; return; }
     fi
 
-    # Add vault folder locally (always recreate to avoid stale DB state)
-    curl -sf -X DELETE -H "$auth_header" "$st_api/config/folders/mycelium-vault" >/dev/null 2>&1 || true
-    sleep 1
-    local _folder_json
-    _folder_json="$(_P="$VAULT_DIR" _L="$local_id" _R="$SYNCTHING_DEVICE_ID" python3 -c \
-        "import json,os; print(json.dumps({'id':'mycelium-vault','label':'MYCELIUM Vault','path':os.environ['_P'],'type':'sendreceive','rescanIntervalS':10,'fsWatcherEnabled':True,'devices':[{'deviceID':os.environ['_L']},{'deviceID':os.environ['_R']}]}))" 2>/dev/null)"
-    curl -sf -X POST -H "$auth_header" -H "Content-Type: application/json" \
-        "$st_api/config/folders" -d "$_folder_json" >/dev/null 2>&1 \
-        && success "Vault folder configured (local)" \
-        || { warn "Failed to add vault folder locally"; _show_manual_syncthing_instructions; return; }
+    # Register all syncable folders locally (idempotent: delete then create)
+    local spec fid label local_path
+    for spec in "${SYNC_FOLDERS[@]}"; do
+        IFS='|' read -r fid label local_path _ <<< "$spec"
+        if ! _st_register_folder "$st_api" "$auth_header" \
+                "$fid" "$label" "$local_path" "$local_id" "$SYNCTHING_DEVICE_ID"; then
+            warn "Failed to add $label locally"
+            _show_manual_syncthing_instructions
+            return
+        fi
+        success "$label configured (local)"
+    done
 
     # ── Configure VPS side via direct HTTP (through Tailscale) ──
 
@@ -487,18 +501,34 @@ sys.exit(0 if os.environ['_ST_DEV_ID'] in ids else 1)
     vps_own_id="$(curl -sf -H "$vps_auth" "$vps_st_api/system/status" 2>/dev/null \
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["myID"])' 2>/dev/null || echo "$SYNCTHING_DEVICE_ID")"
 
-    # Add vault folder on VPS (always recreate to avoid stale DB state)
-    curl -sf -X DELETE -H "$vps_auth" "$vps_st_api/config/folders/mycelium-vault" >/dev/null 2>&1 || true
-    sleep 1
-    local _vps_folder_json
-    _vps_folder_json="$(_V="$vps_own_id" _L="$local_id" python3 -c \
-        "import json,os; print(json.dumps({'id':'mycelium-vault','label':'MYCELIUM Vault','path':'/var/syncthing/vault','type':'sendreceive','rescanIntervalS':10,'fsWatcherEnabled':True,'devices':[{'deviceID':os.environ['_V']},{'deviceID':os.environ['_L']}]}))" 2>/dev/null)"
-    curl -sf -X POST -H "$vps_auth" -H "Content-Type: application/json" \
-        "$vps_st_api/config/folders" -d "$_vps_folder_json" >/dev/null 2>&1 \
-        && success "Vault folder configured (VPS)" \
-        || { warn "Failed to configure VPS vault folder"; _show_manual_syncthing_instructions; return; }
+    # Register all syncable folders on VPS (idempotent)
+    local vps_path
+    for spec in "${SYNC_FOLDERS[@]}"; do
+        IFS='|' read -r fid label _ vps_path <<< "$spec"
+        if ! _st_register_folder "$vps_st_api" "$vps_auth" \
+                "$fid" "$label" "$vps_path" "$vps_own_id" "$local_id"; then
+            warn "Failed to configure $label on VPS"
+            _show_manual_syncthing_instructions
+            return
+        fi
+        success "$label configured (VPS)"
+    done
 
-    success "Vault sync configured — both sides paired"
+    success "Sync configured (${#SYNC_FOLDERS[@]} folders, both sides paired)"
+}
+
+# Register one Syncthing folder via REST API. Idempotent — delete-then-create
+# avoids stale DB state for re-runs.
+# Args: api_url auth_header folder_id label path local_device_id peer_device_id
+_st_register_folder() {
+    local api="$1" auth="$2" fid="$3" label="$4" path="$5" me="$6" peer="$7"
+    curl -sf -X DELETE -H "$auth" "$api/config/folders/$fid" >/dev/null 2>&1 || true
+    sleep 0.5
+    local _json
+    _json="$(_P="$path" _L="$me" _R="$peer" _ID="$fid" _LB="$label" python3 -c \
+        "import json,os; print(json.dumps({'id':os.environ['_ID'],'label':os.environ['_LB'],'path':os.environ['_P'],'type':'sendreceive','rescanIntervalS':10,'fsWatcherEnabled':True,'devices':[{'deviceID':os.environ['_L']},{'deviceID':os.environ['_R']}]}))" 2>/dev/null)"
+    curl -sf -X POST -H "$auth" -H "Content-Type: application/json" \
+        "$api/config/folders" -d "$_json" >/dev/null 2>&1
 }
 
 _show_manual_syncthing_instructions() {
@@ -507,8 +537,14 @@ _show_manual_syncthing_instructions() {
     hint "  1. Open http://localhost:8384 (local Syncthing UI)"
     hint "  2. Add Remote Device -> paste VPS Device ID"
     hint "  3. Set address: tcp://$VPS_HOST:22000"
-    hint "  4. Add Folder -> ID: mycelium-vault -> Path: $VAULT_DIR"
-    hint "  5. Share folder with the VPS device"
+    hint "  4. Add three folders (path is host-side on Mac):"
+    hint "       mycelium-vault    | $VAULT_DIR"
+    hint "       mycelium-domains  | $DOMAINS_DIR"
+    hint "       mycelium-skills   | $SKILLS_DIR"
+    hint "  5. Open http://$VPS_HOST:8384 and add the same folder IDs"
+    hint "     with VPS-side container paths:"
+    hint "       /var/syncthing/vault, /var/syncthing/domains, /var/syncthing/skills"
+    hint "  6. Share each folder with the peer device"
     printf "\n"
 }
 
@@ -563,7 +599,7 @@ main() {
     register_mcp
     install_skills
 
-    step "5/5" "Setting up vault sync"
+    step "5/5" "Setting up Syncthing (vault + domains + skills)"
     setup_syncthing
 
     show_summary

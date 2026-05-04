@@ -149,6 +149,10 @@ services:
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/syncthing:/var/syncthing
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/vault:/var/syncthing/vault
+      # Personal-config parity (Mac ↔ VPS). Granular allow-list — each line
+      # is an explicit declaration that this class of user data is syncable.
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/domains:/var/syncthing/domains
+      - ${MYCELIUM_DATA_DIR:-~/.mycelium}/skills/extraction:/var/syncthing/skills
     ports:
       - "8384:8384"   # Web UI (access via Tailscale only)
       - "22000:22000" # Sync protocol
