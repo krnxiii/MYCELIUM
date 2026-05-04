@@ -67,7 +67,9 @@ services:
       neo4j:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9631/mcp"]
+      # MCP returns 406 on plain GET (FastMCP requires SSE Accept header) —
+      # treat as alive. Mirrors docker-compose.vps.yml pattern (without auth).
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' http://localhost:9631/mcp | grep -qE '200|406'"]
       interval: 10s
       timeout: 5s
       retries: 5
