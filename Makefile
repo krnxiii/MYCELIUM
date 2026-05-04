@@ -138,7 +138,7 @@ mcp-gate-init:
 # (where they were ephemerally lost on rebuild) into the new persistent
 # user dir ~/.mycelium/skills/extraction/. Idempotent.
 migrate-user-data:
-	@bash scripts/migrate-skills.sh
+	@bash scripts/migrate-user-data.sh
 
 mcp-skills-install:
 	@for skill in mycelium-on mycelium-off mycelium-ingest mycelium-recall mycelium-reflect mycelium-distill mycelium-discover; do \

@@ -182,13 +182,19 @@ After this, editing a blueprint or skill on the laptop propagates to the VPS wit
 
 ### Migrating from older versions
 
-If you upgraded from a version where `save_extraction_skill` wrote into `mycelium/skills/extraction/` (mixed with bundled defaults, lost on rebuild), run the migration once:
+If you upgraded from a version that stored user data inside the container (skills baked into the image, domain blueprints in `/root/.mycelium/domains/`, `.env` written by the telegram setup wizard), run the migration once before rebuilding:
 
 ```sh
 make migrate-user-data
 ```
 
-It uses `git ls-files` to identify bundled skills, copies the rest from the running container into `~/.mycelium/skills/extraction/`, and is idempotent (safe to re-run). `make update` calls this automatically before rebuilding containers.
+It copies three classes of at-risk data out of the running container and onto the host volume:
+
+1. **User extraction skills** — anything in `/app/mycelium/skills/extraction/` not tracked in git (bundled defaults are skipped).
+2. **Domain blueprints** — every YAML in `/root/.mycelium/domains/`.
+3. **`.env`** — only if the container has one and the host doesn't.
+
+Idempotent: existing host-side files are never overwritten. `make update` runs this automatically before rebuilding, so a vanilla `git pull && make update` upgrade is safe.
 
 ## Why no daemon?
 
