@@ -169,16 +169,19 @@ User data lives under `~/.mycelium/` (overridable via `MYCELIUM_DATA_DIR`). Cont
 
 ### Cross-device sync (Mac ↔ VPS)
 
-The VPS compose ships a `syncthing` service. By default it syncs only `vault/`. To get full personal-config parity across devices, add two more folders in the syncthing UI (port 8384, reachable via Tailscale):
+The VPS `syncthing` service has bind mounts for three personal-config classes (granular allow-list — explicit declaration of what is syncable):
 
-```
-~/.mycelium/domains/             ↔  ~/.mycelium/domains/
-~/.mycelium/skills/extraction/   ↔  ~/.mycelium/skills/extraction/
-```
+| Folder ID | Mac path (host) | VPS path (container) |
+|-----------|------------------|----------------------|
+| `mycelium-vault` | `~/.mycelium/vault` | `/var/syncthing/vault` |
+| `mycelium-domains` | `~/.mycelium/domains` | `/var/syncthing/domains` |
+| `mycelium-skills` | `~/.mycelium/skills/extraction` | `/var/syncthing/skills` |
 
-Optional: `.env` (careful — it contains secrets; only sync between trusted devices).
+`bash scripts/connect-vps.sh` registers all three folders automatically on both sides via the Syncthing REST API — re-run any time to re-pair. To set up by hand, open `http://localhost:8384` (Mac) and `http://<tailscale-ip>:8384` (VPS) and add each folder with the paths above.
 
-After this, editing a blueprint or skill on the laptop propagates to the VPS within seconds, and `load_skills()` / `load_domains()` hot-reload on next call.
+After pairing, editing a blueprint or skill on the laptop propagates to the VPS within seconds, and `load_skills()` / `load_domains()` hot-reload on next call.
+
+`.env` is intentionally **not** synced — it contains secrets and per-host config. Migrate manually if needed (`make migrate-user-data` for one-shot lift from a legacy container).
 
 ### Migrating from older versions
 
