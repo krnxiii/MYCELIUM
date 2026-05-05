@@ -29,6 +29,8 @@ from mycelium.domain import (
     save as save_domain_bp, delete as delete_domain_bp,
     DomainBlueprint, ExtractionConfig, FieldConfig, TrackingConfig,
     match_domain,
+    ensure_marker as ensure_domain_marker,
+    regenerate_marker as regenerate_domain_marker,
 )
 from mycelium.domain.registry import to_compact_list
 from mycelium.domain.tracking import (
@@ -1134,6 +1136,7 @@ async def impl_get_domain(name: str) -> dict[str, Any]:
 
 async def impl_create_domain(
     name:          str,
+    slug:          str = "",
     description:   str = "",
     vault_prefix:  str = "",
     anchor_neuron: str = "",
@@ -1147,6 +1150,18 @@ async def impl_create_domain(
     analysis:      str = "",
     chart_style_json: str = "",
 ) -> dict[str, Any]:
+    from mycelium.domain import slugify as _slugify_name
+    canonical_slug = slug or _slugify_name(name)
+
+    # Slug uniqueness — structural identity guard. Distinct names that
+    # collapse to the same slug would silently overwrite each other on
+    # save (filename collision). Reject early.
+    for d in load_domains():
+        if d.slug == canonical_slug:
+            return {
+                "error": f"Domain with slug '{canonical_slug}' already exists "
+                         f"(name: '{d.name}'). Use update_domain or pick a different name."
+            }
     if load_domain(name):
         return {"error": f"Domain '{name}' already exists. Use update_domain."}
 
@@ -1169,6 +1184,7 @@ async def impl_create_domain(
         cs = ChartStyle(**json.loads(chart_style_json))
 
     bp = DomainBlueprint(
+        slug          = canonical_slug,
         name          = name,
         description   = description,
         vault_prefix  = vault_prefix,
@@ -1179,7 +1195,17 @@ async def impl_create_domain(
         tracking      = TrackingConfig(fields=tf, analysis=analysis, chart_style=cs),
     )
     path = save_domain_bp(bp)
-    return {"status": "created", "name": name, "path": str(path)}
+
+    sett        = load_settings()
+    marker_path = ensure_domain_marker(sett.vault.path, bp)
+
+    return {
+        "status":       "created",
+        "slug":         bp.slug,
+        "name":         name,
+        "path":         str(path),
+        "vault_marker": str(marker_path.relative_to(sett.vault.path)),
+    }
 
 
 async def impl_update_domain(
@@ -1202,8 +1228,16 @@ async def impl_update_domain(
     if not existing:
         return {"error": f"Domain '{name}' not found."}
 
+    # vault_prefix and slug are structurally immutable (Pydantic frozen).
+    # Reject early with a clear message instead of letting the model
+    # raise FrozenError on assignment.
+    if vault_prefix and vault_prefix != existing.vault_prefix:
+        return {
+            "error": f"vault_prefix is immutable (current: '{existing.vault_prefix}'). "
+                     f"To change it, delete the domain and create a new one."
+        }
+
     if description:   existing.description   = description
-    if vault_prefix:  existing.vault_prefix  = vault_prefix
     if anchor_neuron: existing.anchor_neuron = anchor_neuron
     if anchor_type:   existing.anchor_type   = anchor_type
     if anchor_uuid:   existing.anchor_uuid   = anchor_uuid
@@ -1227,10 +1261,27 @@ async def impl_update_domain(
         existing.tracking.chart_style = ChartStyle(**json.loads(chart_style_json))
 
     path = save_domain_bp(existing)
-    return {"status": "updated", "name": name, "path": str(path)}
+
+    sett        = load_settings()
+    marker_path = regenerate_domain_marker(sett.vault.path, existing)
+
+    return {
+        "status":       "updated",
+        "slug":         existing.slug,
+        "name":         name,
+        "path":         str(path),
+        "vault_marker": str(marker_path.relative_to(sett.vault.path)),
+    }
 
 
 async def impl_delete_domain(name: str) -> dict[str, Any]:
+    """Delete a domain blueprint from the registry.
+
+    Data preservation: the vault folder ``CORTEX/{name}/`` and its
+    ``_blueprint.md`` marker are intentionally left in place. This
+    avoids Syncthing-mediated deletions on other clients and keeps
+    historical content recoverable.
+    """
     if delete_domain_bp(name):
         return {"status": "deleted", "name": name}
     return {"error": f"Domain '{name}' not found."}
@@ -2364,14 +2415,26 @@ async def vault_link(
 
     vault.update_signal_uuid(relative_path, signal_uuid)
 
-    # Mirror vault content_hash onto Signal so graph can detect drift without
-    # needing the vault index.
-    entry = vault.get_by_path(relative_path)
-    if entry and entry.content_hash:
-        await my._c.driver.execute_query(
-            "MATCH (e:Signal {uuid: $uuid}) SET e.content_hash = $hash",
-            {"uuid": signal_uuid, "hash": entry.content_hash},
-        )
+    # R7.6 fundamental: vault_link binds the Signal to a VaultFile node
+    # via the STORED_AT edge. Multi-pass case (N signals → 1 file) is
+    # automatic — every signal already linked to the same VaultFile is
+    # normalized in one query. source_desc remains as a denormalized
+    # cache for backward-compat queries.
+    from mycelium.vault.file import bind_signal_to_file, normalize_file_signals
+    entry        = vault.get_by_path(relative_path)
+    content_hash = entry.content_hash if (entry and entry.content_hash) else None
+
+    bound      = await bind_signal_to_file(
+        my._c.driver,
+        signal_uuid   = signal_uuid,
+        relative_path = relative_path,
+        content_hash  = content_hash,
+    )
+    normalized = await normalize_file_signals(
+        my._c.driver,
+        relative_path = relative_path,
+        content_hash  = content_hash,
+    )
 
     if settings.obsidian.enabled:
         from mycelium.obsidian.sync import inject_after_ingest
@@ -2383,7 +2446,12 @@ async def vault_link(
         )
 
     _schedule_vault_sync()
-    return {"status": "linked", "relative_path": relative_path}
+    return {
+        "status":        "linked",
+        "relative_path": relative_path,
+        "bound":         bound,
+        "normalized":    normalized,
+    }
 
 
 # ── Obsidian ──────────────────────────────────────────────────────

@@ -234,18 +234,17 @@ async def _write_companion(
     settings:      ObsidianSettings,
 ) -> None:
     """Create/update companion .md for a binary file."""
-    source_desc  = _source_desc_for(relative_path)
-    neurons_info = await get_neurons(driver, source_desc)
+    neurons_info = await get_neurons(driver, relative_path)
 
     related_files, similar_files = await asyncio.gather(
         get_related(
-            driver, source_desc,
+            driver, relative_path,
             min_shared      = settings.min_shared_neurons,
             max_related     = settings.max_related,
             include_expired = settings.include_expired,
         ),
         get_similar(
-            driver, source_desc,
+            driver, relative_path,
             threshold   = settings.similarity_threshold,
             max_similar = settings.max_similar,
         ),
@@ -299,18 +298,17 @@ async def _write_frontmatter(
     original_ext:  str = "",
 ) -> None:
     """Compute and write mycelium frontmatter to a .md file."""
-    source_desc  = _source_desc_for(relative_path)
-    neurons_info = await get_neurons(driver, source_desc)
+    neurons_info = await get_neurons(driver, relative_path)
 
     related_files, similar_files = await asyncio.gather(
         get_related(
-            driver, source_desc,
+            driver, relative_path,
             min_shared      = settings.min_shared_neurons,
             max_related     = settings.max_related,
             include_expired = settings.include_expired,
         ),
         get_similar(
-            driver, source_desc,
+            driver, relative_path,
             threshold   = settings.similarity_threshold,
             max_similar = settings.max_similar,
         ),
@@ -352,10 +350,10 @@ async def _write_frontmatter(
 
 
 def _build_related_links(related_files: list) -> list[str]:
-    """Build wikilinks from related files' source_desc."""
+    """Build wikilinks from related files' relative_path."""
     links: list[str] = []
     for rf in related_files:
-        rel_path = _source_desc_to_path(rf.source_desc)
+        rel_path = rf.relative_path
         if rel_path and rel_path.endswith(".md"):
             links.append(fm.wikilink(rel_path))
         elif rel_path:
@@ -406,7 +404,6 @@ async def _detect_moves(
             continue  # old file still exists → this is a copy, not move
 
         # Move detected: old_rel → rel
-        old_desc = _source_desc_for(old_rel)
         new_desc = _source_desc_for(rel)
 
         # Update vault index
@@ -415,12 +412,20 @@ async def _detect_moves(
         index[rel] = old_meta
         vault._save_index(index)
 
-        # Update Signal.source_desc in Neo4j
+        # R7.6 fundamental: update VaultFile.relative_path (primary key
+        # of the binding); mirror new source_desc onto Signal as cache.
         await driver.execute_query(
-            "MATCH (s:Signal) "
-            "WHERE s.source_desc = $old_desc "
+            "MATCH (vf:VaultFile {relative_path: $old_path}) "
+            "SET vf.relative_path = $new_path, "
+            "    vf.updated_at    = datetime() "
+            "WITH vf "
+            "MATCH (s:Signal)-[:STORED_AT]->(vf) "
             "SET s.source_desc = $new_desc",
-            {"old_desc": old_desc, "new_desc": new_desc},
+            {
+                "old_path": old_rel,
+                "new_path": rel,
+                "new_desc": new_desc,
+            },
         )
 
         missing.discard(old_rel)
@@ -450,10 +455,10 @@ def _raw_hash(path: Path) -> str:
 
 
 def _build_similar_links(similar_files: list) -> list[str]:
-    """Build wikilinks from similar files' source_desc."""
+    """Build wikilinks from similar files' relative_path."""
     links: list[str] = []
     for sf in similar_files:
-        rel_path = _source_desc_to_path(sf.source_desc)
+        rel_path = sf.relative_path
         if rel_path and rel_path.endswith(".md"):
             links.append(fm.wikilink(rel_path))
         elif rel_path:
@@ -482,11 +487,11 @@ def _source_desc_to_path(source_desc: str) -> str:
 
 
 def _build_source_links(sources: list) -> list[str]:
-    """Build wikilinks from source signals' source_desc."""
+    """Build wikilinks from source signals' relative_path."""
     links: list[str] = []
     seen:  set[str]  = set()
     for s in sources:
-        rel_path = _source_desc_to_path(s.get("source_desc", ""))
+        rel_path = s.get("relative_path", "") or ""
         if not rel_path or rel_path in seen:
             continue
         seen.add(rel_path)
@@ -604,8 +609,9 @@ async def _project_neurons(
         "} "
         "CALL (n) { "
         "  OPTIONAL MATCH (sig:Signal)-[:MENTIONS]->(n) "
-        "    WHERE sig.source_type = 'file' "
-        "  RETURN collect(DISTINCT {source_desc: sig.source_desc, "
+        "  OPTIONAL MATCH (sig)-[:STORED_AT]->(vf:VaultFile) "
+        "  WITH sig, vf WHERE vf IS NOT NULL "
+        "  RETURN collect(DISTINCT {relative_path: vf.relative_path, "
         "                           name: sig.name}) AS sources "
         "} "
         "RETURN n.uuid AS uuid, n.name AS name, "
@@ -641,7 +647,7 @@ async def _project_neurons(
         synapse_lines = _render_synapse_lines(synapses)
 
         # Source signals: wikilinks to docs that MENTIONS this neuron
-        sources      = [s for s in (row.get("sources") or []) if s.get("source_desc")]
+        sources      = [s for s in (row.get("sources") or []) if s.get("relative_path")]
         source_links = _build_source_links(sources)
 
         fields = {
@@ -672,9 +678,9 @@ async def _project_neurons(
         if sources:
             body_parts.append("\n## Sources\n")
             body_parts.append("\n".join(
-                f"- {fm.wikilink(_source_desc_to_path(s['source_desc']))}"
+                f"- {fm.wikilink(s['relative_path'])}"
                 for s in sources
-                if _source_desc_to_path(s["source_desc"])
+                if s.get("relative_path")
             ))
         if synapse_lines:
             body_parts.append("\n## Connections\n")

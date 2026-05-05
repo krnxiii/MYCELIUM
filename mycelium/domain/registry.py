@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,7 +9,7 @@ from typing import Any
 import structlog
 import yaml
 
-from mycelium.domain.models import DomainBlueprint
+from mycelium.domain.models import DomainBlueprint, slugify
 
 log = structlog.get_logger()
 
@@ -18,9 +17,8 @@ DOMAINS_DIR = Path.home() / ".mycelium" / "domains"
 
 
 def _slugify(name: str) -> str:
-    """Convert name to filesystem-safe slug (supports Unicode)."""
-    slug = re.sub(r"[^\w]+", "_", name.lower(), flags=re.UNICODE).strip("_")
-    return slug or "domain"
+    """Backward-compat alias — prefer mycelium.domain.models.slugify."""
+    return slugify(name)
 
 
 def load_all() -> list[DomainBlueprint]:
@@ -38,21 +36,32 @@ def load_all() -> list[DomainBlueprint]:
     return domains
 
 
-def load_by_name(name: str) -> DomainBlueprint | None:
-    """Load a specific domain blueprint by name."""
-    for d in load_all():
-        if d.name.lower() == name.lower():
-            return d
-
-    # Try by slug filename
-    slug = _slugify(name)
+def load_by_slug(slug: str) -> DomainBlueprint | None:
+    """Load a domain blueprint by its immutable slug — primary lookup."""
     path = DOMAINS_DIR / f"{slug}.yaml"
     if path.exists():
         try:
             return _parse(path)
         except Exception:
-            pass
+            return None
+    return None
 
+
+def load_by_name(name: str) -> DomainBlueprint | None:
+    """Load a domain blueprint by display name (case-insensitive).
+
+    Prefer ``load_by_slug`` for identity lookups — name is mutable and
+    can change while slug stays fixed.
+    """
+    bp = load_by_slug(slugify(name))
+    if bp is not None:
+        return bp
+
+    # Slug derived from current name didn't match — search by name field
+    # (covers domains where the user renamed via mutable `name`).
+    for d in load_all():
+        if d.name.lower() == name.lower():
+            return d
     return None
 
 
@@ -62,19 +71,19 @@ def save(blueprint: DomainBlueprint) -> Path:
 
     blueprint.updated_at = datetime.now(timezone.utc)
 
-    slug = _slugify(blueprint.name)
+    slug = blueprint.slug or slugify(blueprint.name)
     path = DOMAINS_DIR / f"{slug}.yaml"
 
     data = blueprint.model_dump(mode="json")
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
 
-    log.info("domain_saved", name=blueprint.name, path=str(path))
+    log.info("domain_saved", slug=slug, name=blueprint.name, path=str(path))
     return path
 
 
 def delete(name: str) -> bool:
-    """Delete domain blueprint by name. Returns True if deleted."""
-    slug = _slugify(name)
+    """Delete domain blueprint by name or slug. Returns True if deleted."""
+    slug = slugify(name)
     path = DOMAINS_DIR / f"{slug}.yaml"
 
     if path.exists():
@@ -86,9 +95,9 @@ def delete(name: str) -> bool:
     for p in DOMAINS_DIR.glob("*.yaml"):
         try:
             d = _parse(p)
-            if d.name.lower() == name.lower():
+            if d.name.lower() == name.lower() or d.slug == slug:
                 p.unlink()
-                log.info("domain_deleted", name=name, path=str(p))
+                log.info("domain_deleted", name=name, slug=d.slug, path=str(p))
                 return True
         except Exception:
             continue

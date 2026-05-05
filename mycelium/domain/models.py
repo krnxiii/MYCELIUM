@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def slugify(name: str) -> str:
+    """Convert name to filesystem-safe slug (supports Unicode).
+
+    Identity for a domain — used as the YAML filename, the folder under
+    CORTEX, and the uniqueness key in the registry. Stable: derives the
+    same value for the same name across runs and locales.
+    """
+    slug = re.sub(r"[^\w]+", "_", name.lower(), flags=re.UNICODE).strip("_")
+    return slug or "domain"
 
 
 class ExtractionConfig(BaseModel):
@@ -74,13 +87,22 @@ class DomainBlueprint(BaseModel):
     Stored as YAML in ~/.mycelium/domains/.
     Adapts ingestion, vault routing, and graph structure
     for a specific knowledge area.
+
+    Identity vs presentation:
+      - ``slug`` and ``vault_prefix`` are immutable (frozen). They form
+        the structural identity of the domain — filesystem path, registry
+        key, vault folder. Changing them after creation would orphan the
+        on-disk content. To "rename" structurally, create a new domain.
+      - ``name``, ``description``, ``triggers``, ``extraction``, ``tracking``
+        are mutable presentation/behavior fields — safe to update freely.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
 
+    slug:          str              = Field(default="", frozen=True)
     name:          str              = ""
     description:   str              = ""
-    vault_prefix:  str              = ""
+    vault_prefix:  str              = Field(default="", frozen=True)
     anchor_neuron: str              = ""
     anchor_type:   str              = ""
     anchor_uuid:   str              = ""
@@ -89,3 +111,12 @@ class DomainBlueprint(BaseModel):
     tracking:      TrackingConfig   = Field(default_factory=TrackingConfig)
     created_at:    datetime         = Field(default_factory=_now)
     updated_at:    datetime         = Field(default_factory=_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_slug(cls, data: Any) -> Any:
+        """Derive slug from name if not given (legacy YAML compat)."""
+        if isinstance(data, dict):
+            if not data.get("slug") and data.get("name"):
+                data["slug"] = slugify(str(data["name"]))
+        return data
