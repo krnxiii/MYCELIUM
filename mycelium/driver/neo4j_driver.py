@@ -27,6 +27,11 @@ CONSTRAINTS = [
 
     "CREATE CONSTRAINT signal_uuid IF NOT EXISTS "
     "FOR (n:Signal) REQUIRE n.uuid IS UNIQUE",
+
+    # R7.6 fundamental: VaultFile node owns the signal↔file binding.
+    # relative_path is the primary key — one node per logical file.
+    "CREATE CONSTRAINT vault_file_path IF NOT EXISTS "
+    "FOR (n:VaultFile) REQUIRE n.relative_path IS UNIQUE",
 ]
 
 _HNSW = (
@@ -111,9 +116,23 @@ MIGRATIONS = [
     "  AND s.source_desc IS NOT NULL "
     "  AND NOT s.source_desc STARTS WITH 'file:' "
     "SET s.source_desc = 'file:' + s.source_desc",
+
+    # R7.6 fundamental: backfill VaultFile node + STORED_AT edge for every
+    # existing file-Signal. After this, the graph is the source of truth for
+    # signal↔file binding; source_desc remains as a denormalized cache.
+    "MATCH (s:Signal) "
+    "WHERE s.source_type = 'file' "
+    "  AND s.source_desc STARTS WITH 'file:' "
+    "  AND NOT (s)-[:STORED_AT]->(:VaultFile) "
+    "WITH s, substring(s.source_desc, 5) AS rp "
+    "MERGE (vf:VaultFile {relative_path: rp}) "
+    "  ON CREATE SET vf.created_at = datetime(), "
+    "                vf.content_hash = coalesce(s.content_hash, '') "
+    "MERGE (s)-[r:STORED_AT]->(vf) "
+    "  ON CREATE SET r.created_at = datetime()",
 ]
 
-EXPECTED_CONSTRAINTS = {"neuron_uuid", "signal_uuid"}
+EXPECTED_CONSTRAINTS = {"neuron_uuid", "signal_uuid", "vault_file_path"}
 EXPECTED_INDEXES     = {
     "neuron_name_emb", "neuron_summary_emb", "signal_content_emb",
     "signal_file_emb", "synapse_emb",

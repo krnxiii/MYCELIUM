@@ -9,32 +9,34 @@ from mycelium.driver.driver import GraphDriver
 
 @dataclass
 class RelatedFile:
-    source_desc:  str
-    shared:       list[str]   # neuron names
-    strength:     int         # count of shared neurons
+    relative_path: str
+    shared:        list[str]   # neuron names
+    strength:      int         # count of shared neurons
 
 
-# Query by source_desc (not signal_uuid) — handles multi-section files:
-# all signals from the same file share the canonical source_desc
-# "file:{relative_path}" (normalized by Signal validator in core/models.py).
+# R7.6 fundamental: queries traverse the explicit
+# (Signal)-[:STORED_AT]->(VaultFile) edge instead of joining on
+# the implicit source_desc string. This makes multi-pass ingestion
+# (N signals → 1 file) work uniformly: any signal whose VaultFile
+# matches the path contributes its mentions.
 _RELATED_QUERY = """\
-MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron)<-[:MENTIONS]-(other:Signal)
-WHERE sig.source_desc = $source_desc
-  AND other.source_desc <> sig.source_desc
-  AND other.source_type = 'file'
-  {expired_filter}
-WITH other.source_desc AS other_desc,
+MATCH (vf:VaultFile {relative_path: $relative_path})
+      <-[:STORED_AT]-(sig:Signal)-[:MENTIONS]->(n:Neuron)
+      <-[:MENTIONS]-(other:Signal)-[:STORED_AT]->(other_vf:VaultFile)
+WHERE other_vf.relative_path <> $relative_path
+  __EXPIRED_FILTER__
+WITH other_vf.relative_path AS other_path,
      collect(DISTINCT n.name) AS shared,
      count(DISTINCT n) AS strength
-RETURN other_desc AS source_desc, shared, strength
+RETURN other_path AS relative_path, shared, strength
 ORDER BY strength DESC
 LIMIT $max_related
 """
 
 _NEURONS_QUERY = """\
-MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron)
-WHERE sig.source_desc = $source_desc
-  AND n.expired_at IS NULL
+MATCH (:VaultFile {relative_path: $relative_path})
+      <-[:STORED_AT]-(:Signal)-[:MENTIONS]->(n:Neuron)
+WHERE n.expired_at IS NULL
 RETURN DISTINCT n.uuid AS uuid, n.name AS name,
                 n.neuron_type AS type, n.confidence AS confidence
 ORDER BY name
@@ -54,27 +56,27 @@ RETURN s.source_type  AS source_type,
 
 
 async def get_related(
-    driver:       GraphDriver,
-    source_desc:  str,
+    driver:        GraphDriver,
+    relative_path: str,
     *,
     min_shared:      int  = 1,
     max_related:     int  = 20,
     include_expired: bool = False,
 ) -> list[RelatedFile]:
-    """Find files sharing neurons with the given file (by source_desc)."""
+    """Find files sharing neurons with the given file (graph-edge join)."""
     expired_filter = "" if include_expired else "AND n.expired_at IS NULL"
-    query = _RELATED_QUERY.format(expired_filter=expired_filter)
+    query = _RELATED_QUERY.replace("__EXPIRED_FILTER__", expired_filter)
 
     rows = await driver.execute_query(query, {
-        "source_desc": source_desc,
-        "max_related": max_related,
+        "relative_path": relative_path,
+        "max_related":   max_related,
     })
 
     return [
         RelatedFile(
-            source_desc = r["source_desc"] or "",
-            shared      = r["shared"],
-            strength    = r["strength"],
+            relative_path = r["relative_path"] or "",
+            shared        = r["shared"],
+            strength      = r["strength"],
         )
         for r in rows
         if r["strength"] >= min_shared
@@ -130,16 +132,16 @@ async def get_signal_meta(
 class SourceSignal:
     """Signal that mentions a neuron — for neuron→source backlinks."""
 
-    source_desc: str
-    name:        str
-    valid_at:    str = ""
+    relative_path: str
+    name:          str
+    valid_at:      str = ""
 
 
 _SOURCE_SIGNALS_QUERY = """\
-MATCH (sig:Signal)-[:MENTIONS]->(n:Neuron {uuid: $neuron_uuid})
-WHERE sig.source_type = 'file'
-RETURN DISTINCT sig.source_desc AS source_desc,
-                sig.name        AS name,
+MATCH (sig:Signal)-[:MENTIONS]->(:Neuron {uuid: $neuron_uuid})
+MATCH (sig)-[:STORED_AT]->(vf:VaultFile)
+RETURN DISTINCT vf.relative_path AS relative_path,
+                sig.name         AS name,
                 toString(sig.valid_at) AS valid_at
 ORDER BY valid_at DESC
 LIMIT $max_sources
@@ -159,9 +161,9 @@ async def get_source_signals(
     })
     return [
         SourceSignal(
-            source_desc = r["source_desc"] or "",
-            name        = r["name"] or "",
-            valid_at    = r["valid_at"] or "",
+            relative_path = r["relative_path"] or "",
+            name          = r["name"] or "",
+            valid_at      = r["valid_at"] or "",
         )
         for r in rows
     ]
@@ -169,57 +171,55 @@ async def get_source_signals(
 
 @dataclass
 class SimilarFile:
-    source_desc: str
-    score:       float
+    relative_path: str
+    score:         float
 
 
 _SIMILAR_QUERY = """\
-MATCH (sig:Signal)
-WHERE sig.source_desc = $source_desc
-  AND sig.source_type = 'file'
-  AND sig.file_embedding IS NOT NULL
+MATCH (vf:VaultFile {relative_path: $relative_path})<-[:STORED_AT]-(sig:Signal)
+WHERE sig.file_embedding IS NOT NULL
 WITH sig.file_embedding AS vec LIMIT 1
 CALL db.index.vector.queryNodes('signal_file_emb', $top_n, vec)
 YIELD node AS other, score
-WHERE other.source_desc <> $source_desc
-  AND other.source_type = 'file'
+MATCH (other)-[:STORED_AT]->(other_vf:VaultFile)
+WHERE other_vf.relative_path <> $relative_path
   AND score >= $threshold
-RETURN DISTINCT other.source_desc AS source_desc, max(score) AS score
+RETURN DISTINCT other_vf.relative_path AS relative_path, max(score) AS score
 ORDER BY score DESC
 LIMIT $max_similar
 """
 
 
 async def get_similar(
-    driver:      GraphDriver,
-    source_desc: str,
+    driver:        GraphDriver,
+    relative_path: str,
     *,
     threshold:   float = 0.75,
     max_similar: int   = 10,
 ) -> list[SimilarFile]:
     """Find files with similar content via cosine on file_embedding."""
     rows = await driver.execute_query(_SIMILAR_QUERY, {
-        "source_desc": source_desc,
-        "top_n":       max_similar * 3,
-        "threshold":   threshold,
-        "max_similar":  max_similar,
+        "relative_path": relative_path,
+        "top_n":         max_similar * 3,
+        "threshold":     threshold,
+        "max_similar":   max_similar,
     })
     return [
         SimilarFile(
-            source_desc = r["source_desc"] or "",
-            score       = round(r["score"], 3),
+            relative_path = r["relative_path"] or "",
+            score         = round(r["score"], 3),
         )
         for r in rows
     ]
 
 
 async def get_neurons(
-    driver:      GraphDriver,
-    source_desc: str,
+    driver:        GraphDriver,
+    relative_path: str,
 ) -> list[NeuronInfo]:
-    """Get all neurons from all signals of a file (by source_desc)."""
+    """Get all neurons from all signals of a file (via STORED_AT edge)."""
     rows = await driver.execute_query(_NEURONS_QUERY, {
-        "source_desc": source_desc,
+        "relative_path": relative_path,
     })
     return [
         NeuronInfo(

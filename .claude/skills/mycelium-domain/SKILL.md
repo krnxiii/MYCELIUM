@@ -99,17 +99,26 @@ If user wants changes — adjust and re-confirm.
 
 **Step 5: Create**
 
-1. `create_domain(name, ...)` — saves YAML to `~/.mycelium/domains/`
+1. `create_domain(name, ...)` — saves YAML to `~/.mycelium/domains/{slug}.yaml`,
+   eagerly creates `CORTEX/{slug}/_blueprint.md` marker so the domain
+   is visible in Obsidian/Syncthing immediately (R7.6).
+   - `slug` is auto-derived from `name` (e.g. "Blood Tests" → "blood_tests").
+     Pass an explicit `slug` parameter to override.
+   - `slug` and `vault_prefix` are **immutable** after creation. To "rename"
+     structurally, delete and recreate. `name`, `description`, `triggers`
+     stay mutable.
 2. `add_neuron(name=anchor_neuron, neuron_type=anchor_type,
      attributes={"is_anchor": true, "domain": name})`
    — create the hub neuron in graph
 3. `update_domain(name, anchor_uuid="{uuid}")` — cache UUID in blueprint
+   and refresh the marker (preserves user-block below `<!-- user -->`).
 
 **Step 6: Report**
 
 ```
 Domain "{name}" created:
   Blueprint: ~/.mycelium/domains/{slug}.yaml
+  Marker:    CORTEX/{slug}/_blueprint.md
   Vault:     {vault_prefix}
   Anchor:    {anchor_neuron} ({anchor_uuid})
   Triggers:  {triggers}

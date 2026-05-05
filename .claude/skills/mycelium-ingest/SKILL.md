@@ -149,6 +149,13 @@ link the signal UUID back to vault:
 This writes Obsidian frontmatter (if enabled) and connects the vault entry
 to the knowledge graph.
 
+`vault_link` creates a `VaultFile` node and a `(Signal)-[:STORED_AT]->(VaultFile)`
+edge — this is the canonical file↔signal binding (R7.6 fundamental).
+Multi-pass ingest (one file → N signals): call `vault_link` once with the
+first `signal_uuid`; the operation also normalizes any other signals already
+linked to the same `VaultFile`. Frontmatter queries traverse the edge, not
+the legacy `source_desc` string.
+
 ## Error Handling
 
 - File not found → tell user, check the path.
