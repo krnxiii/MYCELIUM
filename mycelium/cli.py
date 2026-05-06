@@ -247,6 +247,26 @@ def serve(
     host      = host or cfg.host
     port      = port or cfg.port
     auth_token = cfg.auth_token
+
+    # Apply schema constraints + migrations eagerly at startup. Previously
+    # this was lazy-triggered by the first MCP tool call (in `_get()`),
+    # which made the post-deploy state non-deterministic: if no traffic
+    # arrived, the new schema was never applied. Fail fast here — Docker
+    # health-check turns red and the operator sees the problem immediately
+    # instead of much later when a constraint silently never appeared.
+    async def _eager_schema() -> None:
+        drv = Neo4jDriver(settings.neo4j)
+        await drv.__aenter__()
+        try:
+            await drv.build_indices()
+        finally:
+            await drv.close()
+    try:
+        asyncio.run(_eager_schema())
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(f"Schema initialization failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
     try:
         from mycelium.mcp.server import mcp as mcp_server
     except ImportError as exc:
