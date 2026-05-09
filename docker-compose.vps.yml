@@ -26,8 +26,8 @@ services:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/plugins:/var/lib/neo4j/plugins
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u ${MYCELIUM_NEO4J__USER:-neo4j} -p ${MYCELIUM_NEO4J__PASSWORD:-password} 'RETURN 1'"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 15s
       retries: 5
       start_period: 30s
     restart: unless-stopped
@@ -88,6 +88,7 @@ services:
       MYCELIUM_TELEGRAM__STT_MODEL: ${MYCELIUM_TELEGRAM__STT_MODEL:-medium}
       MYCELIUM_TELEGRAM__STT_LANGUAGE: ${MYCELIUM_TELEGRAM__STT_LANGUAGE:-auto}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      PYTHONUNBUFFERED: "1"
     volumes:
       # Shared user-data: telegram bot reads/writes ~/.mycelium/.env
       # and shares vault/domains/skills with mycelium-app.
@@ -97,7 +98,7 @@ services:
       - ~/.claude.json:/root/.claude.json
     depends_on:
       mycelium:
-        condition: service_healthy
+        condition: service_started
     profiles:
       - telegram
     restart: unless-stopped
