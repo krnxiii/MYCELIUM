@@ -311,6 +311,12 @@ def serve(
         except ImportError:
             typer.echo("Render enabled but deps missing — skipping", err=True)
 
+    # Periodic heap trim: glibc retains freed arena pages after ingest/
+    # extraction bursts (RSS pins to the transient high-water and never falls).
+    # Return them to the OS. No-op off glibc. See mycelium/utils/memory.py.
+    from mycelium.utils.memory import start_periodic_trim
+    start_periodic_trim()
+
     if transport == "stdio":
         mcp_server.run()
     else:

@@ -26,8 +26,8 @@ services:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/plugins:/var/lib/neo4j/plugins
     healthcheck:
       test: ["CMD-SHELL", "cypher-shell -u ${MYCELIUM_NEO4J__USER:-neo4j} -p ${MYCELIUM_NEO4J__PASSWORD:-password} 'RETURN 1'"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 15s
       retries: 5
       start_period: 30s
     restart: unless-stopped
@@ -35,10 +35,22 @@ services:
   mycelium:
     build: .
     container_name: mycelium-app
+    # Backstop only. Primary fix is in-process periodic malloc_trim(0) (see
+    # mycelium/utils/memory.py): glibc retained freed arenas after ingest bursts
+    # up to 5.6 GB (97% cold) while the working set was ~150 MB. The trim keeps
+    # RSS near the working set; this hard cap + no container swap just guarantees
+    # a clean OOM-restart instead of host thrash if anything slips past it.
+    mem_limit: 2g
+    memswap_limit: 2g
     ports:
       - "9631:9631"
       - "9633:9633"
     environment:
+      # Cap glibc per-thread arenas (default 8×cores) to shrink the
+      # fragmentation surface. Complementary to the periodic malloc_trim(0)
+      # that actually returns freed pages to the OS — ARENA_MAX alone does not
+      # reclaim (measured: no RSS drop without an explicit trim).
+      MALLOC_ARENA_MAX: "2"
       MYCELIUM_NEO4J__URI: bolt://neo4j:7687
       MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
       MYCELIUM_SEMANTIC__PROVIDER: api
@@ -88,6 +100,7 @@ services:
       MYCELIUM_TELEGRAM__STT_MODEL: ${MYCELIUM_TELEGRAM__STT_MODEL:-medium}
       MYCELIUM_TELEGRAM__STT_LANGUAGE: ${MYCELIUM_TELEGRAM__STT_LANGUAGE:-auto}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      PYTHONUNBUFFERED: "1"
     volumes:
       # Shared user-data: telegram bot reads/writes ~/.mycelium/.env
       # and shares vault/domains/skills with mycelium-app.
@@ -97,7 +110,7 @@ services:
       - ~/.claude.json:/root/.claude.json
     depends_on:
       mycelium:
-        condition: service_healthy
+        condition: service_started
     profiles:
       - telegram
     restart: unless-stopped
@@ -158,23 +171,10 @@ services:
       - "22000:22000" # Sync protocol
     restart: unless-stopped
 
-  # Tailscale mesh VPN
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: mycelium-tailscale
-    hostname: mycelium-vps
-    environment:
-      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
-    volumes:
-      - tailscale_state:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    restart: unless-stopped
+  # Tailscale mesh VPN: removed — services are exposed on the host node
+  # (z13contabo) via published ports; nothing was routed through this
+  # container node (no network_mode: service:tailscale), so it only created
+  # a redundant tailnet node. Access MCP/Neo4j on the host's tailscale IP.
 
 volumes:
   tg_uploads:
-  tailscale_state:
