@@ -167,23 +167,10 @@ services:
       - "22000:22000" # Sync protocol
     restart: unless-stopped
 
-  # Tailscale mesh VPN
-  tailscale:
-    image: tailscale/tailscale:latest
-    container_name: mycelium-tailscale
-    hostname: mycelium-vps
-    environment:
-      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
-      - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
-    volumes:
-      - tailscale_state:/var/lib/tailscale
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    restart: unless-stopped
+  # Tailscale mesh VPN: removed — services are exposed on the host node
+  # (z13contabo) via published ports; nothing was routed through this
+  # container node (no network_mode: service:tailscale), so it only created
+  # a redundant tailnet node. Access MCP/Neo4j on the host's tailscale IP.
 
 volumes:
   tg_uploads:
-  tailscale_state:
