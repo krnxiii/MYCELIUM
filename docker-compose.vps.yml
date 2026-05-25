@@ -35,17 +35,21 @@ services:
   mycelium:
     build: .
     container_name: mycelium-app
-    # Hard memory bound: working set is ~150 MB, but glibc retained freed
-    # arenas after ingest bursts up to 5.6 GB (97% cold) and dragged the host
-    # into swap. Cap + no container swap → OOM-restart instead of host thrash.
+    # Backstop only. Primary fix is in-process periodic malloc_trim(0) (see
+    # mycelium/utils/memory.py): glibc retained freed arenas after ingest bursts
+    # up to 5.6 GB (97% cold) while the working set was ~150 MB. The trim keeps
+    # RSS near the working set; this hard cap + no container swap just guarantees
+    # a clean OOM-restart instead of host thrash if anything slips past it.
     mem_limit: 2g
     memswap_limit: 2g
     ports:
       - "9631:9631"
       - "9633:9633"
     environment:
-      # Cap glibc per-thread arenas (default 8×cores) — prevents the retention
-      # that ballooned RSS to 5.6 GB. Keeps allocator from hoarding freed memory.
+      # Cap glibc per-thread arenas (default 8×cores) to shrink the
+      # fragmentation surface. Complementary to the periodic malloc_trim(0)
+      # that actually returns freed pages to the OS — ARENA_MAX alone does not
+      # reclaim (measured: no RSS drop without an explicit trim).
       MALLOC_ARENA_MAX: "2"
       MYCELIUM_NEO4J__URI: bolt://neo4j:7687
       MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
