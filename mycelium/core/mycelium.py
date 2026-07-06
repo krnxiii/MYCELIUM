@@ -176,6 +176,9 @@ class Mycelium:
             all_questions: list[ExtractedQuestion]  = []
             chunk_meta:    list[dict[str, int]]    = []
             file_category: str                      = ""
+            # One consolidation per neuron per signal — chunk/gleaning/
+            # analysis passes re-mention the same neurons (audit M2).
+            consolidated:  set[str]                 = set()
 
             n = len(chunks)
             if n == 1:
@@ -187,6 +190,7 @@ class Mycelium:
                     session=extraction_session,
                     on_progress=on_progress,
                     extraction_focus=extraction_focus,
+                    consolidated=consolidated,
                 )
                 file_category = file_cat
                 all_neurons.extend(neurons)
@@ -217,6 +221,7 @@ class Mycelium:
                     _p("processing", f"chunk {i + 1}/{n} — dedup + save")
                     neurons, synapses = await self._process_extracted(
                         signal, result, on_progress=on_progress,
+                        consolidated=consolidated,
                     )
                     all_neurons.extend(neurons)
                     all_synapses.extend(synapses)
@@ -252,6 +257,7 @@ class Mycelium:
                     signal, _prompt=glean_prompt, _label="gleaning",
                     session=extraction_session,
                     on_progress=on_progress,
+                    consolidated=consolidated,
                 )
                 all_neurons.extend(gl_n)
                 all_synapses.extend(gl_s)
@@ -268,6 +274,7 @@ class Mycelium:
                 ana_n, ana_s, ana_q, _ = await self._run_pipeline(
                     signal, _prompt=ana_prompt, _label="analysis",
                     on_progress=on_progress,
+                    consolidated=consolidated,
                 )
                 for n in ana_n:
                     n.origin = "derived"
@@ -545,8 +552,9 @@ class Mycelium:
         per_item:    list[IngestResult]    = []
         item_ranges: list[tuple[int, int]] = []  # (start, end) in flat pool
 
-        flat_neurons:  list[ExtractedNeuron]  = []
-        flat_synapses: list[ExtractedSynapse] = []
+        flat_neurons:   list[ExtractedNeuron]  = []
+        flat_synapses:  list[ExtractedSynapse] = []
+        flat_syn_items: list[int]              = []  # item idx per flat synapse
 
         for it in items:
             content = it.get("content", "")
@@ -594,10 +602,16 @@ class Mycelium:
             )
             per_item.append(result)
 
-            start = len(flat_neurons)
+            start    = len(flat_neurons)
+            item_idx = len(signals) - 1
             flat_neurons.extend(result.neurons)
             flat_synapses.extend(result.synapses)
+            flat_syn_items.extend([item_idx] * len(result.synapses))
             item_ranges.append((start, len(flat_neurons)))
+
+        if not signals:
+            log.warning("ingest_batch_empty", items=len(items))
+            return []
 
         _p("embedding", f"{len(flat_neurons)} neuron names (batch)")
 
@@ -629,7 +643,17 @@ class Mycelium:
             if orig not in name_map and surviving in name_map:
                 name_map[orig] = name_map[surviving]
 
-        # [6] Resolve synapses
+        # [5b] Per-item provenance: which final neuron does each item mention
+        # (audit M1 — previously every signal got MENTIONS to ALL batch
+        # neurons and every synapse was stamped with signals[0]).
+        mentioned_by: dict[int, set[str]] = {}
+        for idx, res in enumerate(per_item):
+            for extn in res.neurons:
+                n = name_map.get(extn.name)
+                if n is not None:
+                    mentioned_by.setdefault(idx, set()).add(n.uuid)
+
+        # [6] Resolve synapses (per-item episode attribution)
         dropped = [
             (es.source, es.target)
             for es in flat_synapses
@@ -638,37 +662,59 @@ class Mycelium:
         if dropped:
             log.warning("synapses_unresolved", count=len(dropped), pairs=dropped[:5])
 
-        candidates = [
-            (es, name_map[es.source], name_map[es.target])
-            for es in flat_synapses
-            if es.source in name_map and es.target in name_map
-        ]
+        candidates: list[tuple[Any, Neuron, Neuron]] = []
+        cand_eps:   list[str] = []
+        for es, item_idx in zip(flat_synapses, flat_syn_items, strict=True):
+            if es.source in name_map and es.target in name_map:
+                candidates.append((es, name_map[es.source], name_map[es.target]))
+                cand_eps.append(signals[item_idx].uuid)
         syn_vecs = await self._embed_deduped(
             [es.fact for es, _, _ in candidates],
         ) if candidates else []
 
         _p("resolving", f"{len(candidates)} synapse candidates")
-        synapses, dup_uuids = await self._resolve_synapses(
-            candidates, syn_vecs, merged,
+        synapses, dup_syns = await self._resolve_synapses(
+            candidates, syn_vecs, merged, episode_uuids=cand_eps,
         )
 
-        # [7] Consolidation (uses signals[0].valid_at — same as _save_all)
+        # [7] Consolidation, then per-item freshness/created_at: a neuron's
+        # timestamps come from the items that actually mention it (max
+        # valid_at across them), not from signals[0].
         self._apply_consolidation(neurons, merged, state, signals[0])
+        item_valid: dict[str, datetime] = {}
+        for idx, uuids in mentioned_by.items():
+            va = signals[idx].valid_at
+            for u in uuids:
+                if u not in item_valid or va > item_valid[u]:
+                    item_valid[u] = va
+        for n in neurons:
+            va = item_valid.get(n.uuid)
+            if va is not None:
+                n.freshness = va
+                if n.uuid not in merged:
+                    n.created_at = va
 
-        # [8] Fill synapse valid_at fallback from signal
+        # [8] Fill synapse valid_at fallback from its own item's signal
+        sig_by_uuid = {s.uuid: s for s in signals}
         for syn in synapses:
             if syn.valid_at is None:
-                syn.valid_at = signals[0].valid_at
+                ep  = syn.episodes[0] if syn.episodes else ""
+                src = sig_by_uuid.get(ep, signals[0])
+                syn.valid_at = src.valid_at
 
-        # [9] Save all neurons + synapses via first signal
+        # [9] Save neurons + synapses; signals[0] mentions only its own
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
-        await self._save_all(signals[0], neurons, synapses, dup_uuids)
+        await self._save_all(
+            signals[0], neurons, synapses, dup_syns,
+            mention_uuids=mentioned_by.get(0, set()),
+        )
 
         # [9+10] Mentions for remaining signals + status flips — one transaction.
         # Previously these ran as separate auto-commit queries: a mid-loop failure
         # left some signals with orphan MENTIONS and others stuck at
         # status=extracting forever. Commit them atomically instead.
         drv = self._c.driver
+        uniq_neurons = list({n.uuid: n for n in neurons}.values())
         extra_mentions = [
             {
                 "sig":        m.source_uuid,
@@ -676,8 +722,11 @@ class Mycelium:
                 "uuid":       m.uuid,
                 "created_at": m.created_at.isoformat(),
             }
-            for sig in signals[1:]
-            for m in (Mention(source_uuid=sig.uuid, target_uuid=n.uuid) for n in neurons)
+            for idx, sig in enumerate(signals[1:], start=1)
+            for m in (
+                Mention(source_uuid=sig.uuid, target_uuid=u)
+                for u in sorted(mentioned_by.get(idx, set()))
+            )
         ]
         for sig in signals:
             sig.status = SignalStatus.saved
@@ -708,10 +757,14 @@ class Mycelium:
                  items=len(items), neurons=len(neurons),
                  synapses=len(synapses), duration_ms=ms)
 
-        # Build per-item results
+        # Build per-item results: each signal reports the neurons it mentions
+        # and the synapses it originated (not the whole batch).
         results: list[tuple[Signal, list[Neuron], list[Synapse]]] = []
-        for sig in signals:
-            results.append((sig, neurons, synapses))
+        for idx, sig in enumerate(signals):
+            item_uuids = mentioned_by.get(idx, set())
+            ns = [n for n in uniq_neurons if n.uuid in item_uuids]
+            ss = [s for s in synapses if s.episodes and s.episodes[0] == sig.uuid]
+            results.append((sig, ns, ss))
         return results
 
     def _cross_dedup_neurons(
@@ -803,11 +856,15 @@ class Mycelium:
             raise ExtractionError(f"Signal {signal_uuid} not found")
 
         r = rows[0]
+        # Reuse the existing Signal (idempotent via _save_signal MERGE) —
+        # omitting signal_uuid created a duplicate Signal per re-extraction
+        # and split the provenance chain (audit M7).
         return await self.add_episode(
             r["content"],
             name        = r["name"],
             source_type = SignalType(r["source_type"]),
             source_desc = r["source_desc"] or "",
+            signal_uuid = signal_uuid,
         )
 
     # ── Owner Identity ─────────────────────────────────────
@@ -985,6 +1042,7 @@ class Mycelium:
         session:    LLMSession | None = None,
         on_progress: ProgressFn = None,
         extraction_focus: str  = "",
+        consolidated: set[str] | None = None,
     ) -> tuple[list[Neuron], list[Synapse], list[ExtractedQuestion], str]:
         """Extract → embed → dedup → save. Full single-chunk pipeline.
 
@@ -1069,6 +1127,7 @@ class Mycelium:
 
         neurons, synapses = await self._process_extracted(
             signal, result, on_progress=on_progress,
+            consolidated=consolidated,
         )
         return neurons, synapses, result.questions, result.file_category
 
@@ -1275,10 +1334,11 @@ class Mycelium:
 
     async def _process_extracted(
         self,
-        signal:      Signal,
-        result:      IngestResult,
+        signal:       Signal,
+        result:       IngestResult,
         *,
-        on_progress: ProgressFn = None,
+        on_progress:  ProgressFn = None,
+        consolidated: set[str] | None = None,
     ) -> tuple[list[Neuron], list[Synapse]]:
         """Embed → dedup → resolve → save. Sequential post-extraction processing."""
         def _p(step: str, detail: str = "") -> None:
@@ -1327,12 +1387,13 @@ class Mycelium:
 
         # [5] Resolve synapses (vector dedup)
         _p("resolving", f"{len(candidates)} synapse candidates")
-        synapses, dup_uuids = await self._resolve_synapses(
+        synapses, dup_syns = await self._resolve_synapses(
             candidates, syn_vecs, merged,
         )
 
         # [6] Consolidation (freshness/created_at from signal.valid_at)
-        self._apply_consolidation(neurons, merged, state, signal)
+        self._apply_consolidation(neurons, merged, state, signal,
+                                  seen=consolidated)
 
         # [7] Fill synapse valid_at fallback from signal
         for syn in synapses:
@@ -1341,7 +1402,7 @@ class Mycelium:
 
         # [8] Save (batch)
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
-        await self._save_all(signal, neurons, synapses, dup_uuids)
+        await self._save_all(signal, neurons, synapses, dup_syns)
 
         return neurons, synapses
 
@@ -1416,7 +1477,8 @@ class Mycelium:
             "       e.decay_rate    AS decay_rate, "
             "       e.confirmations AS confirmations, "
             "       e.attributes    AS attributes, "
-            "       e.expires_at    AS expires_at",
+            "       e.expires_at    AS expires_at, "
+            "       e.name_embedding IS NOT NULL AS has_emb",
             {"norms": list(set(norms))},
         )
         exact = {r["name"].strip().lower(): r for r in rows}
@@ -1434,7 +1496,18 @@ class Mycelium:
             if not match and vec:
                 match = await self._vector_match(vec)
 
-            if match and match["uuid"] not in merged:
+            if match and match["uuid"] in merged:
+                # Second extraction matching an already-merged DB neuron:
+                # reuse it — falling through to create would write a
+                # duplicate node ("Go" and "Golang" both matching DB "Go",
+                # audit M3). Same object appended keeps the 1:1 zip with
+                # `extracted` that callers rely on for name_map.
+                n = next(x for x in neurons if x.uuid == match["uuid"])
+                self._absorb_extraction(n, ext)
+                neurons.append(n)
+                log.info("neuron_deduped_repeat",
+                         extracted=ext.name, merged_with=match["name"])
+            elif match:
                 state[match["uuid"]] = match
                 n = self._merged_neuron(match, ext, vec)
                 neurons.append(n)
@@ -1470,11 +1543,26 @@ class Mycelium:
             for idx, ext, grey_match, vec in grey_pending:
                 if idx in llm_results:
                     match = llm_results[idx]
-                    state[match["uuid"]] = match
-                    neurons[idx] = self._merged_neuron(match, ext, vec)
-                    merged.add(match["uuid"])
+                    if match["uuid"] in merged:
+                        n = next(x for x in neurons if x.uuid == match["uuid"])
+                        self._absorb_extraction(n, ext)
+                        neurons[idx] = n
+                    else:
+                        state[match["uuid"]] = match
+                        neurons[idx] = self._merged_neuron(match, ext, vec)
+                        merged.add(match["uuid"])
 
         return neurons, merged, list(state.values())
+
+    @staticmethod
+    def _absorb_extraction(n: Neuron, ext: Any) -> None:
+        """Fold a repeat extraction's attributes/insights into an existing
+        merged Neuron (incoming wins per-key, insights appended)."""
+        n.attributes = {**n.attributes, **dict(ext.attributes)}
+        if ext.insights:
+            prev = n.attributes.get("insights")
+            prev = prev if isinstance(prev, list) else []
+            n.attributes["insights"] = list(dict.fromkeys([*prev, *ext.insights]))
 
     def _merged_neuron(
         self, match: dict[str, Any], ext: Any, vec: list[float],
@@ -1515,16 +1603,25 @@ class Mycelium:
             attributes    = attrs,
             expires_at    = expires,
         )
-        n.name_embedding = vec
+        # Keep the canonical DB vector: overwriting it with the alias
+        # embedding drifts the neuron toward whichever alias merged last,
+        # degrading future dedup and search (audit M4). Backfill only when
+        # the DB node has no embedding (legacy nodes).
+        n.name_embedding = [] if match.get("has_emb") else vec
         return n
 
     async def _vector_match(
         self, vec: list[float],
     ) -> dict[str, Any] | None:
-        """Find similar neuron via Neo4j vector index (>= cosine_threshold)."""
+        """Find similar neuron via Neo4j vector index (>= cosine_threshold).
+
+        Over-fetches (k=10) before the liveness filter: expired neurons keep
+        their embeddings, so with k=1 a dead nearest neighbor permanently
+        shadows the live duplicate at rank 2 (audit M5).
+        """
         try:
             rows = await self._c.driver.execute_query(
-                "CALL db.index.vector.queryNodes('neuron_name_emb', 1, $vec) "
+                "CALL db.index.vector.queryNodes('neuron_name_emb', 10, $vec) "
                 "YIELD node AS e, score "
                 "WHERE score >= $thr AND e.expired_at IS NULL "
                 "RETURN e.uuid          AS uuid, "
@@ -1535,7 +1632,9 @@ class Mycelium:
                 "       e.decay_rate    AS decay_rate, "
                 "       e.confirmations AS confirmations, "
                 "       e.attributes    AS attributes, "
-                "       e.expires_at    AS expires_at",
+                "       e.expires_at    AS expires_at, "
+                "       e.name_embedding IS NOT NULL AS has_emb "
+                "ORDER BY score DESC LIMIT 1",
                 {"vec": vec, "thr": self._s.dedup.cosine_threshold},
             )
             return rows[0] if rows else None
@@ -1546,10 +1645,14 @@ class Mycelium:
     async def _vector_match_grey(
         self, vec: list[float],
     ) -> dict[str, Any] | None:
-        """Find neuron in grey zone: [llm_threshold, cosine_threshold)."""
+        """Find neuron in grey zone: [llm_threshold, cosine_threshold).
+
+        Over-fetches (k=10) so an expired nearest neighbor doesn't shadow a
+        live grey-zone candidate (audit M5).
+        """
         try:
             rows = await self._c.driver.execute_query(
-                "CALL db.index.vector.queryNodes('neuron_name_emb', 1, $vec) "
+                "CALL db.index.vector.queryNodes('neuron_name_emb', 10, $vec) "
                 "YIELD node AS e, score "
                 "WHERE score >= $lo AND score < $hi "
                 "  AND e.expired_at IS NULL "
@@ -1562,7 +1665,9 @@ class Mycelium:
                 "       e.confirmations AS confirmations, "
                 "       e.attributes    AS attributes, "
                 "       e.expires_at    AS expires_at, "
-                "       score",
+                "       e.name_embedding IS NOT NULL AS has_emb, "
+                "       score "
+                "ORDER BY score DESC LIMIT 1",
                 {
                     "vec": vec,
                     "lo":  self._s.dedup.llm_threshold,
@@ -1639,11 +1744,19 @@ class Mycelium:
 
     async def _resolve_synapses(
         self,
-        candidates: list[tuple[Any, Neuron, Neuron]],
-        syn_vecs:   list[list[float]],
-        merged:     set[str],
-    ) -> tuple[list[Synapse], list[str]]:
-        """Vector dedup + contradiction detection. Returns (synapses, dup_uuids)."""
+        candidates:    list[tuple[Any, Neuron, Neuron]],
+        syn_vecs:      list[list[float]],
+        merged:        set[str],
+        episode_uuids: list[str] | None = None,
+    ) -> tuple[list[Synapse], list[tuple[str, str | None]]]:
+        """Vector dedup + contradiction detection.
+
+        Returns (synapses, dups) where dups pairs each confirmed-duplicate
+        synapse uuid with the episode that confirmed it (None → caller's
+        signal). ``episode_uuids`` (parallel to candidates) stamps each new
+        synapse's provenance — batch ingest passes the per-item signal so
+        facts don't all get attributed to the first item (audit M1).
+        """
         # Load existing synapse data for merged neurons
         existing: list[dict[str, Any]] = []
         if merged:
@@ -1661,16 +1774,29 @@ class Mycelium:
                 for r in rows if r.get("emb")
             ]
 
-        synapses:  list[Synapse] = []
-        dup_uuids: list[str]     = []
+        synapses:  list[Synapse]                 = []
+        dups:      list[tuple[str, str | None]]  = []
         contra_cfg = self._s.contradiction
 
-        # Collect contradiction candidates for batch LLM call
-        # (pair_id, extracted_synapse, src, tgt, vec, existing_uuid)
-        contra_batch: list[tuple[int, Any, Neuron, Neuron,
-                                 list[float], str]] = []
+        eps: list[str | None] = (
+            list(episode_uuids) if episode_uuids is not None
+            else [None] * len(candidates)
+        )
 
-        for (es, src, tgt), vec in zip(candidates, syn_vecs, strict=True):
+        def _new_synapse(es: Any, src: Neuron, tgt: Neuron,
+                         vec: list[float], ep: str | None) -> Synapse:
+            syn = _make_synapse(es, src, tgt, vec)
+            if ep:
+                syn.episodes = [ep]
+            return syn
+
+        # Collect contradiction candidates for batch LLM call
+        # (pair_id, extracted_synapse, src, tgt, vec, existing_uuid, episode)
+        contra_batch: list[tuple[int, Any, Neuron, Neuron,
+                                 list[float], str, str | None]] = []
+
+        for (es, src, tgt), vec, ep in zip(candidates, syn_vecs, eps,
+                                           strict=True):
             dup        = None
             best_match = None          # (uuid, fact, cosine)
 
@@ -1679,7 +1805,7 @@ class Mycelium:
                 # return 0.0 and bypass dedup/contradiction. Write as new, but
                 # surface it instead of degrading quietly.
                 log.warning("synapse_no_embedding", fact=es.fact[:80])
-                synapses.append(_make_synapse(es, src, tgt, vec))
+                synapses.append(_new_synapse(es, src, tgt, vec, ep))
                 continue
 
             for ex in existing:
@@ -1693,48 +1819,48 @@ class Mycelium:
                     best_match = (ex["uuid"], ex["fact"], sim)
 
             if dup:
-                dup_uuids.append(dup)
+                dups.append((dup, ep))
                 continue
 
             if best_match is not None:
                 contra_batch.append((
-                    len(contra_batch), es, src, tgt, vec, best_match[0],
+                    len(contra_batch), es, src, tgt, vec, best_match[0], ep,
                 ))
                 continue
 
-            synapses.append(_make_synapse(es, src, tgt, vec))
+            synapses.append(_new_synapse(es, src, tgt, vec, ep))
 
         # ── Contradiction classification (R1.1) ──────────────
         if contra_batch:
             ex_facts = {ex["uuid"]: ex["fact"] for ex in existing}
             prompt_pairs = [
                 (pid, es.fact, ex_facts[ex_uuid])
-                for pid, es, _, _, _, ex_uuid in contra_batch
+                for pid, es, _, _, _, ex_uuid, _ in contra_batch
             ]
             verdicts = await self._classify_contradictions(prompt_pairs)
             resolved = {pid for pid, _, _ in verdicts}
 
-            for pid, es, src, tgt, vec, ex_uuid in contra_batch:
+            for pid, es, src, tgt, vec, ex_uuid, ep in contra_batch:
                 if pid not in resolved:
                     # LLM failed for this pair — treat as new synapse
-                    synapses.append(_make_synapse(es, src, tgt, vec))
+                    synapses.append(_new_synapse(es, src, tgt, vec, ep))
                     continue
 
                 verdict, conf = next(
                     (v, c) for p, v, c in verdicts if p == pid
                 )
                 if verdict == "CONFIRM":
-                    dup_uuids.append(ex_uuid)
+                    dups.append((ex_uuid, ep))
                 elif (verdict == "SUPERSEDE"
                       and conf >= contra_cfg.auto_expire_confidence):
-                    syn = _make_synapse(es, src, tgt, vec)
+                    syn = _new_synapse(es, src, tgt, vec, ep)
                     syn.attributes["contradicts"] = ex_uuid
                     synapses.append(syn)
                     log.info("synapse_superseded",
                              new=syn.fact[:80], old_uuid=ex_uuid)
                 else:
                     # CONTRADICT or low-confidence SUPERSEDE — keep both
-                    syn = _make_synapse(es, src, tgt, vec)
+                    syn = _new_synapse(es, src, tgt, vec, ep)
                     syn.attributes["contradiction_of"] = ex_uuid
                     synapses.append(syn)
                     log.info("synapse_contradiction",
@@ -1748,7 +1874,7 @@ class Mycelium:
                      contradict=sum(1 for _, v, _ in verdicts
                                     if v == "CONTRADICT"))
 
-        return synapses, dup_uuids
+        return synapses, dups
 
     async def _classify_contradictions(
         self,
@@ -1780,20 +1906,48 @@ class Mycelium:
         merged_uuids: set[str],
         existing:     list[dict[str, Any]],
         signal:       Signal,
+        *,
+        seen:         set[str] | None = None,
     ) -> None:
         """Update decay/freshness for re-mentioned neurons.
 
         Freshness/created_at come from signal.valid_at — so historical data
         ages correctly (MAX logic in Cypher keeps the most recent mention).
+
+        ``seen`` (per-signal, threaded by add_episode) makes consolidation
+        idempotent within one signal: chunk, gleaning, and analytical passes
+        each re-mention the same neurons, and without the guard one document
+        yields confirmations += 7 (audit M2). "Repetition strengthens" means
+        repetition over time, not repetition across LLM passes.
         """
         state_by_uuid = {e["uuid"]: e for e in existing}
         sv            = signal.valid_at
+        done_here: set[str] = set()
 
         for neuron in neurons:
+            if neuron.uuid in done_here:
+                continue                # same object appears twice (M3 reuse)
+            done_here.add(neuron.uuid)
+
             if neuron.uuid in merged_uuids:
+                if seen is not None and neuron.uuid in seen:
+                    # Already consolidated for this signal in a previous
+                    # pass; the DB state re-read this pass includes that
+                    # increment — keep it, don't compound.
+                    st = state_by_uuid.get(neuron.uuid, {})
+                    neuron.importance    = (st.get("importance")
+                                            or st.get("confidence")
+                                            or neuron.importance)
+                    neuron.confidence    = neuron.importance
+                    neuron.decay_rate    = (st.get("decay_rate")
+                                            or neuron.decay_rate)
+                    neuron.confirmations = (st.get("confirmations")
+                                            or neuron.confirmations)
+                    neuron.freshness     = sv
+                    continue
                 st   = state_by_uuid.get(neuron.uuid, {})
                 imp  = st.get("importance") or st.get("confidence", neuron.importance)
-                cnt  = st.get("confirmations", neuron.confirmations)
+                cnt  = st.get("confirmations") or neuron.confirmations
 
                 new_imp, new_rate, new_count = consolidate(
                     imp, cnt, self._s.decay,
@@ -1807,6 +1961,8 @@ class Mycelium:
                 neuron.confirmations = 0
                 neuron.created_at    = sv
 
+            if seen is not None:
+                seen.add(neuron.uuid)
             neuron.freshness = sv
 
     # ── Domain resolution ─────────────────────────────────
@@ -1885,13 +2041,25 @@ class Mycelium:
         signal:         Signal,
         neurons:        list[Neuron],
         synapses:       list[Synapse],
-        dup_syn_uuids:  list[str],
+        dup_syns:       list[tuple[str, str | None]],
+        *,
+        mention_uuids:  set[str] | None = None,
     ) -> None:
         """P0.2: batch UNWIND queries (3-5 queries instead of N+1).
 
         Wraps all writes in a single transaction — partial crashes roll back
         cleanly instead of leaving orphan neurons/synapses/mentions.
+
+        ``mention_uuids`` restricts which neurons get a MENTIONS edge from
+        this signal (batch ingest: each item mentions only its own neurons,
+        audit M1). Default None = mention every saved neuron (single-signal
+        path). ``dup_syns`` pairs each duplicate synapse with the episode
+        that confirmed it (None → this signal).
         """
+        # M3 reuse can put the same Neuron object in the list twice — write
+        # (and mention) each uuid once.
+        neurons = list({n.uuid: n for n in neurons}.values())
+
         async def _work(run: Any) -> None:
             # ── Neurons batch ──────────────────────────────
             if neurons:
@@ -1973,7 +2141,7 @@ class Mycelium:
                             "fact":       s.fact,
                             "emb":        s.fact_embedding,
                             "rel":        s.relation,
-                            "episodes":   [signal.uuid],
+                            "episodes":   s.episodes or [signal.uuid],
                             "conf":       s.confidence,
                             "origin":     s.origin,
                             "created_at": s.created_at.isoformat(),
@@ -2005,7 +2173,7 @@ class Mycelium:
                 )
 
             # ── Duplicate synapses provenance ──────────────
-            if dup_syn_uuids:
+            if dup_syns:
                 await run(
                     "UNWIND $batch AS d "
                     "MATCH ()-[f:SYNAPSE {uuid: d.uuid}]->() "
@@ -2016,18 +2184,22 @@ class Mycelium:
                     {"batch": [
                         {
                             "uuid":  u,
-                            "ep":    signal.uuid,
+                            "ep":    ep or signal.uuid,
                             "boost": self._s.decay.evidence_boost,
                         }
-                        for u in dup_syn_uuids
+                        for u, ep in dup_syns
                     ]},
                 )
 
             # ── Mentions batch ─────────────────────────────
-            if neurons:
+            to_mention = (
+                neurons if mention_uuids is None
+                else [n for n in neurons if n.uuid in mention_uuids]
+            )
+            if to_mention:
                 mentions = [
                     Mention(source_uuid=signal.uuid, target_uuid=n.uuid)
-                    for n in neurons
+                    for n in to_mention
                 ]
                 await run(
                     "UNWIND $batch AS m "
