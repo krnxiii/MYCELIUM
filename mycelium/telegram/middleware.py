@@ -33,7 +33,8 @@ class AuthMiddleware(BaseMiddleware):
         self.allow_all     = allow_all
         if owner_chat_id == 0 and allow_all:
             log.warning("auth.open_mode",
-                        hint="MYCELIUM_TELEGRAM__ALLOW_ALL=true — bot accepts ALL users (insecure)")
+                        hint="MYCELIUM_TELEGRAM__ALLOW_ALL_USERS=true — "
+                             "bot accepts ALL users (insecure)")
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
@@ -115,6 +116,11 @@ async def _remove_reaction(msg: Message) -> None:
 
 _COALESCE_DELAY = 0.5  # seconds to wait for more messages after last buffered
 
+# Control commands bypass buffering entirely: /abort exists to interrupt the
+# operation that HOLDS the lock — buffering it behind that same lock made it
+# structurally unable to ever fire (audit C4).
+_CONTROL_COMMANDS = ("/abort",)
+
 
 class SequentialMiddleware(BaseMiddleware):
     """Process messages sequentially per chat. Coalesce queued messages.
@@ -122,11 +128,23 @@ class SequentialMiddleware(BaseMiddleware):
     While a handler is running for a chat, incoming messages are buffered.
     When the handler finishes, buffered messages are merged into one
     and processed as a single request (collect mode).
+
+    Owns the per-chat serialization contract: every agent entry point —
+    including out-of-band ones like the media-batch flush — must serialize
+    through chat_lock(); bypassing it lets two agent runs overlap (audit C5).
     """
 
     def __init__(self) -> None:
         self._locks:   dict[int, asyncio.Lock]        = defaultdict(asyncio.Lock)
         self._buffers: dict[int, list[Message]]        = defaultdict(list)
+
+    def chat_lock(self, chat_id: int) -> asyncio.Lock:
+        """Per-chat lock for out-of-band agent entry points (batch flush)."""
+        return self._locks[chat_id]
+
+    def clear(self, chat_id: int) -> int:
+        """Drop buffered messages (after /abort). Returns count dropped."""
+        return len(self._buffers.pop(chat_id, []))
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
@@ -135,7 +153,11 @@ class SequentialMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         chat_id = event.chat.id
-        lock    = self._locks[chat_id]
+        text    = (event.text or "").strip().lower()
+        if text.startswith(_CONTROL_COMMANDS):
+            return await handler(event, data)
+
+        lock = self._locks[chat_id]
 
         # Lock busy — buffer for coalescing, don't block
         if lock.locked():

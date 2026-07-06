@@ -157,6 +157,7 @@ class TelegramSettings(BaseModel):
     debounce_sec:    float = 1.5       # text debounce window
     rate_limit:      int   = 30        # max messages per minute
     session_ttl:     int   = 14400    # agent session TTL in seconds (4h)
+    agent_timeout:   float = 600.0    # wall-clock limit per agent run (seconds)
     # Voice STT
     stt_provider:    str   = "none"    # whisper-local | deepgram | none
     stt_api_key:     str   = ""        # Deepgram API key

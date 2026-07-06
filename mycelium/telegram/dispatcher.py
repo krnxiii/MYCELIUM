@@ -65,17 +65,17 @@ class Dispatcher:
         if not self._agent.has_session(msg.chat_id):
             ctx = await _build_graph_context(self._mcp)
             if ctx:
-                self._agent.set_context(ctx)
+                self._agent.set_context(msg.chat_id, ctx)
         async for chunk in self._agent.run(msg.text, msg.chat_id):
             yield ChannelReply(text=chunk.text)
 
-    def is_busy(self) -> bool:
-        """Check if agent subprocess is currently running."""
-        return self._agent.is_running()
+    def is_busy(self, chat_id: str) -> bool:
+        """Check if an agent subprocess is running for this chat."""
+        return self._agent.is_running(chat_id)
 
-    def abort(self) -> bool:
-        """Abort current agent process."""
-        return self._agent.abort()
+    def abort(self, chat_id: str) -> bool:
+        """Abort this chat's agent process."""
+        return self._agent.abort(chat_id)
 
     async def _fast(self, msg: ChannelMessage) -> AsyncIterator[ChannelReply]:
         parts = msg.text.strip().split(maxsplit=1)
