@@ -192,8 +192,10 @@ class Neo4jDriver(GraphDriver):
         for stmt in MIGRATIONS:
             try:
                 await self.execute_query(stmt)
-            except Exception:
-                pass  # migration already applied or no matching nodes
+            except Exception as e:
+                # Usually idempotent (already applied / no matching nodes), but
+                # log so a genuinely broken migration is not silently swallowed.
+                log.warning("migration_skipped", stmt=stmt[:80], error=str(e))
         log.info("schema_initialized", count=len(ALL_SCHEMA))
 
     async def verify_schema(self) -> tuple[bool, list[str]]:

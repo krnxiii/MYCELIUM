@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,7 @@ from mycelium.render.queries import (
 )
 
 STATIC = Path(__file__).parent / "static"
+log    = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -35,8 +37,8 @@ async def lifespan(app: FastAPI):  # type: ignore[arg-type]
     for stmt in MIGRATIONS:
         try:
             await app.state.drv.execute_query(stmt)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("migration_skipped", stmt=stmt[:80], error=str(e))
     yield
     await app.state.drv.close()
 

@@ -664,35 +664,44 @@ class Mycelium:
         _p("saving", f"{len(neurons)}n + {len(synapses)}s → Neo4j")
         await self._save_all(signals[0], neurons, synapses, dup_uuids)
 
-        # [9] Save mentions for remaining signals
+        # [9+10] Mentions for remaining signals + status flips — one transaction.
+        # Previously these ran as separate auto-commit queries: a mid-loop failure
+        # left some signals with orphan MENTIONS and others stuck at
+        # status=extracting forever. Commit them atomically instead.
         drv = self._c.driver
-        for sig in signals[1:]:
-            mentions = [
-                Mention(source_uuid=sig.uuid, target_uuid=n.uuid)
-                for n in neurons
-            ]
-            if mentions:
-                await drv.execute_query(
+        extra_mentions = [
+            {
+                "sig":        m.source_uuid,
+                "nrn":        m.target_uuid,
+                "uuid":       m.uuid,
+                "created_at": m.created_at.isoformat(),
+            }
+            for sig in signals[1:]
+            for m in (Mention(source_uuid=sig.uuid, target_uuid=n.uuid) for n in neurons)
+        ]
+        for sig in signals:
+            sig.status = SignalStatus.saved
+        status_batch = [
+            {"uuid": sig.uuid, "status": sig.status.value} for sig in signals
+        ]
+
+        async def _save_tail(run: Any) -> None:
+            if extra_mentions:
+                await run(
                     "UNWIND $batch AS m "
                     "MATCH (sig:Signal {uuid: m.sig}), (nrn:Neuron {uuid: m.nrn}) "
                     "CREATE (sig)-[:MENTIONS {"
                     "  uuid: m.uuid, created_at: datetime(m.created_at)"
                     "}]->(nrn)",
-                    {"batch": [
-                        {
-                            "sig":        m.source_uuid,
-                            "nrn":        m.target_uuid,
-                            "uuid":       m.uuid,
-                            "created_at": m.created_at.isoformat(),
-                        }
-                        for m in mentions
-                    ]},
+                    {"batch": extra_mentions},
                 )
+            await run(
+                "UNWIND $batch AS s "
+                "MATCH (e:Signal {uuid: s.uuid}) SET e.status = s.status",
+                {"batch": status_batch},
+            )
 
-        # [10] Mark all signals saved
-        for sig in signals:
-            sig.status = SignalStatus.saved
-            await self._update_status(sig)
+        await drv.run_in_transaction(_save_tail)
 
         ms = int((time.monotonic() - t0) * 1000)
         log.info("ingest_batch_done",
@@ -1638,6 +1647,14 @@ class Mycelium:
         for (es, src, tgt), vec in zip(candidates, syn_vecs, strict=True):
             dup        = None
             best_match = None          # (uuid, fact, cosine)
+
+            if not vec:
+                # No embedding (embedder failure): cosine_sim would silently
+                # return 0.0 and bypass dedup/contradiction. Write as new, but
+                # surface it instead of degrading quietly.
+                log.warning("synapse_no_embedding", fact=es.fact[:80])
+                synapses.append(_make_synapse(es, src, tgt, vec))
+                continue
 
             for ex in existing:
                 sim = cosine_sim(vec, ex["emb"])
