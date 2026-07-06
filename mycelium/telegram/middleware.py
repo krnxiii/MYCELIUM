@@ -21,25 +21,36 @@ Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 # ── Auth: verify chat_id matches owner ──────────────────────────────
 
 class AuthMiddleware(BaseMiddleware):
-    """Reject messages from unauthorized users."""
+    """Reject messages from unauthorized users.
 
-    def __init__(self, owner_chat_id: int) -> None:
+    Fail-closed: an unset owner_chat_id (0) rejects everyone unless
+    `allow_all` is explicitly enabled. The previous behavior — unset == open
+    to all of Telegram — was a fail-open identity boundary on a personal graph.
+    """
+
+    def __init__(self, owner_chat_id: int, allow_all: bool = False) -> None:
         self.owner_chat_id = owner_chat_id
-        if owner_chat_id == 0:
+        self.allow_all     = allow_all
+        if owner_chat_id == 0 and allow_all:
             log.warning("auth.open_mode",
-                        hint="MYCELIUM_TELEGRAM__OWNER_CHAT_ID not set — bot accepts all users")
+                        hint="MYCELIUM_TELEGRAM__ALLOW_ALL=true — bot accepts ALL users (insecure)")
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
     ) -> Any:
-        if (
-            isinstance(event, Message)
-            and self.owner_chat_id != 0
-            and event.chat.id != self.owner_chat_id
-        ):
-            log.warning("auth.rejected", chat_id=event.chat.id)
-            await event.answer("Unauthorized.")
-            return None
+        if isinstance(event, Message):
+            if self.owner_chat_id == 0:
+                if not self.allow_all:
+                    log.error("auth.no_owner", chat_id=event.chat.id)
+                    await event.answer(
+                        "Bot is not configured. Set MYCELIUM_TELEGRAM__OWNER_CHAT_ID.",
+                    )
+                    return None
+                # allow_all explicitly enabled — fall through
+            elif event.chat.id != self.owner_chat_id:
+                log.warning("auth.rejected", chat_id=event.chat.id)
+                await event.answer("Unauthorized.")
+                return None
         return await handler(event, data)
 
 

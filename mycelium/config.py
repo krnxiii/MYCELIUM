@@ -137,20 +137,21 @@ class TendSettings(BaseModel):
 
 class RenderSettings(BaseModel):
     enabled:            bool = False
-    host:               str  = "0.0.0.0"
+    host:               str  = "127.0.0.1"  # loopback by default; Docker sets 0.0.0.0
     port:               int  = 9633
 
 
 class MCPSettings(BaseModel):
     transport:          str  = "stdio"   # stdio | streamable-http
-    host:               str  = "0.0.0.0"
+    host:               str  = "127.0.0.1"  # loopback by default; Docker sets 0.0.0.0
     port:               int  = 9631
-    auth_token:         str  = ""        # empty = no auth (local); set for HTTP
+    auth_token:         str  = ""        # empty = no auth (local); required for non-loopback HTTP
 
 
 class TelegramSettings(BaseModel):
     bot_token:       str   = ""        # @BotFather token
     owner_chat_id:   int   = 0         # authorized user's chat_id
+    allow_all_users: bool  = False     # explicit opt-in to accept ALL users (insecure)
     mcp_url:         str   = "http://localhost:9631/mcp"
     mcp_auth_token:  str   = ""        # Bearer token for MCP HTTP (fallback: mcp.auth_token)
     debounce_sec:    float = 1.5       # text debounce window

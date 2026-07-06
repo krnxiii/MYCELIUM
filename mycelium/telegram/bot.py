@@ -81,7 +81,7 @@ async def _flush_batch(chat_id: int) -> None:
     except Exception as exc:
         log.error("batch.flush_error", chat_id=chat_id, error=str(exc))
         with contextlib.suppress(Exception):
-            await message.answer(f"Error processing batch: {exc}")
+            await message.answer("Error processing batch. Please try again.")
 
 
 # ── Handlers ────────────────────────────────────────────────────────
@@ -296,6 +296,10 @@ async def handle_voice(
         )
         return
 
+    if message.voice.file_size and message.voice.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("Voice message too large (max 20 MB).")
+        return
+
     async with TypingKeepAlive(message):
         # Download voice file
         file = await message.bot.get_file(message.voice.file_id)
@@ -410,6 +414,9 @@ async def _save_photo(message: Message) -> Path | None:
     if not message.bot or not message.photo:
         return None
     photo = message.photo[-1]
+    if photo.file_size and photo.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None
     file  = await message.bot.get_file(photo.file_id)
     if not file.file_path:
         await message.reply("Failed to get photo.")
@@ -438,6 +445,9 @@ async def _save_document(message: Message) -> tuple[Path | None, str]:
     if not message.bot or not message.document:
         return None, ""
     doc  = message.document
+    if doc.file_size and doc.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None, ""
     file = await message.bot.get_file(doc.file_id)
     if not file.file_path:
         await message.reply("Failed to get document.")
@@ -580,6 +590,15 @@ async def run_bot() -> None:
         log.error("telegram.no_token", hint="Set MYCELIUM_TELEGRAM__BOT_TOKEN")
         raise SystemExit(1)
 
+    # Fail-closed: refuse to start an unowned bot unless open mode is explicit.
+    if tg.owner_chat_id == 0 and not tg.allow_all_users:
+        log.error(
+            "telegram.no_owner",
+            hint="Set MYCELIUM_TELEGRAM__OWNER_CHAT_ID (or MYCELIUM_TELEGRAM__ALLOW_ALL=true "
+                 "to accept everyone — insecure, exposes your graph to all of Telegram)",
+        )
+        raise SystemExit(1)
+
     # MCP auth: use telegram-specific token, fallback to MCP server token
     mcp_token = tg.mcp_auth_token or cfg.mcp.auth_token
 
@@ -626,9 +645,11 @@ async def run_bot() -> None:
     if stt:
         dp["stt"] = stt
 
-    # Middleware stack (order matters: first registered = outermost)
+    # Middleware stack (order matters: first registered = outermost).
+    # Auth is outermost so unauthorized chats are rejected before the rate
+    # limiter allocates per-chat state for them (bounds _timestamps growth).
+    router.message.middleware(AuthMiddleware(tg.owner_chat_id, tg.allow_all_users))
     router.message.middleware(RateLimitMiddleware(tg.rate_limit))
-    router.message.middleware(AuthMiddleware(tg.owner_chat_id))
     router.message.middleware(SequentialMiddleware())
     router.message.middleware(ACKMiddleware())
 

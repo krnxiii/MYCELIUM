@@ -275,9 +275,22 @@ def serve(
     # Bearer token auth for HTTP transport
     if transport != "stdio":
         if not auth_token:
+            is_loopback   = host in ("127.0.0.1", "localhost", "::1")
+            allow_no_auth = os.environ.get(
+                "MYCELIUM_MCP__ALLOW_NO_AUTH", "",
+            ).lower() in ("1", "true", "yes")
+            if not (is_loopback or allow_no_auth):
+                # Fail-closed: HTTP on a non-loopback address with no token would
+                # expose every read/write tool to the network. Refuse to start.
+                typer.echo(
+                    f"FATAL: MCP HTTP on {host} requires MYCELIUM_MCP__AUTH_TOKEN. "
+                    "Set it in .env, bind to 127.0.0.1, or set "
+                    "MYCELIUM_MCP__ALLOW_NO_AUTH=true to override (insecure).",
+                    err=True,
+                )
+                raise typer.Exit(1)
             typer.echo(
-                "WARNING: MCP server running on HTTP without auth token. "
-                "Set MYCELIUM_MCP__AUTH_TOKEN in .env",
+                f"WARNING: MCP HTTP on {host} running without auth token.",
                 err=True,
             )
         else:

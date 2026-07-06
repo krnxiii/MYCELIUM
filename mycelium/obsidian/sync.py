@@ -26,6 +26,21 @@ _BINARY_EXTS   = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                   ".mp3", ".wav", ".ogg", ".mp4", ".mov", ".zip"}
 
 
+def _safe_vault_path(vault: VaultStorage, entry_path: str) -> Path:
+    """Resolve entry_path under the vault root, rejecting traversal escapes.
+
+    The vault storage layer guards its own writes, but this write path takes a
+    caller-supplied relative path (e.g. from the vault_link MCP tool). Without
+    containment, '../../foo.md' would escape the vault and overwrite arbitrary
+    files. Resolve and assert the result stays inside root.
+    """
+    root = vault.root.resolve()
+    p    = (root / entry_path).resolve()
+    if p != root and root not in p.parents:
+        raise ValueError(f"path escapes vault root: {entry_path!r}")
+    return p
+
+
 @dataclass
 class SyncResult:
     updated:      int           = 0
@@ -144,7 +159,7 @@ async def inject_after_ingest(
     original_ext: str = "",
 ) -> None:
     """Inject frontmatter into a freshly ingested file (called from add_file)."""
-    abs_path = vault.root / entry_path
+    abs_path = _safe_vault_path(vault, entry_path)
 
     if abs_path.suffix == ".md" and abs_path.exists():
         await _write_frontmatter(

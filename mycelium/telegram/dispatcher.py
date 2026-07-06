@@ -110,10 +110,10 @@ class Dispatcher:
                 yield ChannelReply(text="MCP server unavailable. Try again in a minute.")
             else:
                 log.error("dispatcher.error", cmd=cmd, error=err)
-                yield ChannelReply(text=f"Error: {err}")
+                yield ChannelReply(text="Command failed. Please try again.")
         except Exception as exc:
             log.error("dispatcher.error", cmd=cmd, error=str(exc))
-            yield ChannelReply(text=f"Error: {exc}")
+            yield ChannelReply(text="Command failed. Please try again.")
 
     async def _capture(self, text: str) -> ChannelReply:
         if not text:

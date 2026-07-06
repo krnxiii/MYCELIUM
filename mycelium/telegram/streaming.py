@@ -144,7 +144,11 @@ class TelegramRenderer:
 
     async def _send(self, text: str) -> int | None:
         try:
-            msg = await self._bot.send_message(self._chat_id, text)
+            # parse_mode=None: the bot's global default is HTML, but streamed
+            # agent text is arbitrary (it reads untrusted docs/web) and is not
+            # guaranteed-valid Telegram HTML — sending as HTML drops replies on
+            # any stray '<' and risks markup injection. Deliver as plain text.
+            msg = await self._bot.send_message(self._chat_id, text, parse_mode=None)
             return msg.message_id
         except Exception as e:
             log.warning("renderer.send_failed", error=str(e))
@@ -156,6 +160,7 @@ class TelegramRenderer:
                 text=text,
                 chat_id=self._chat_id,
                 message_id=msg_id,
+                parse_mode=None,
             )
             return True
         except Exception as e:

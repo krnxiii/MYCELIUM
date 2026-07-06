@@ -60,9 +60,17 @@ _KNOWLEDGE_DIR = pathlib.Path(__file__).resolve().parent.parent / "knowledge"
 
 _GATE_DIR.mkdir(parents=True, exist_ok=True)
 (_GATE_DIR / ".read_enabled").touch(exist_ok=True)
-# VPS/Docker: auto-enable write (trusted single-user environment)
+# VPS/Docker: auto-enable write only on a *blessed* HTTP deployment — one that
+# is authenticated (bearer token) or has explicitly opted into open mode. The
+# bearer token is the real access boundary on HTTP; gating auto-write to it
+# stops a stray tokenless server from silently enabling write to the network.
 if os.environ.get("MYCELIUM_MCP__TRANSPORT") == "streamable-http":
-    (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
+    _http_authed   = bool(os.environ.get("MYCELIUM_MCP__AUTH_TOKEN"))
+    _http_open_optin = os.environ.get(
+        "MYCELIUM_MCP__ALLOW_NO_AUTH", "",
+    ).lower() in ("1", "true", "yes")
+    if _http_authed or _http_open_optin:
+        (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
 
 
 def _gate(mode: str) -> dict | None:
