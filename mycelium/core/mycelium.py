@@ -1414,7 +1414,9 @@ class Mycelium:
             "       coalesce(e.importance, e.confidence) AS importance, "
             "       e.confidence    AS confidence, "
             "       e.decay_rate    AS decay_rate, "
-            "       e.confirmations AS confirmations",
+            "       e.confirmations AS confirmations, "
+            "       e.attributes    AS attributes, "
+            "       e.expires_at    AS expires_at",
             {"norms": list(set(norms))},
         )
         exact = {r["name"].strip().lower(): r for r in rows}
@@ -1432,29 +1434,17 @@ class Mycelium:
             if not match and vec:
                 match = await self._vector_match(vec)
 
-            # Merge insights into attributes (L3)
-            attrs = dict(ext.attributes)
-            if ext.insights:
-                attrs["insights"] = ext.insights
-
             if match and match["uuid"] not in merged:
                 state[match["uuid"]] = match
-                n = Neuron(
-                    uuid          = match["uuid"],
-                    name          = match["name"],
-                    neuron_type   = match["neuron_type"] or ext.neuron_type,
-                    importance    = match.get("importance") or match.get("confidence", 1.0),
-                    confidence    = match.get("importance") or match.get("confidence", 1.0),
-                    decay_rate    = match.get("decay_rate", 0.008),
-                    confirmations = match.get("confirmations", 0),
-                    attributes    = attrs,
-                )
-                n.name_embedding = vec
+                n = self._merged_neuron(match, ext, vec)
                 neurons.append(n)
                 merged.add(match["uuid"])
                 log.info("neuron_deduped",
                          extracted=ext.name, merged_with=match["name"])
             else:
+                attrs = dict(ext.attributes)
+                if ext.insights:
+                    attrs["insights"] = ext.insights
                 n = Neuron(
                     name        = ext.name,
                     neuron_type = ext.neuron_type,
@@ -1480,23 +1470,53 @@ class Mycelium:
             for idx, ext, grey_match, vec in grey_pending:
                 if idx in llm_results:
                     match = llm_results[idx]
-                    attrs = dict(ext.attributes)
-                    if ext.insights:
-                        attrs["insights"] = ext.insights
                     state[match["uuid"]] = match
-                    neurons[idx] = Neuron(
-                        uuid          = match["uuid"],
-                        name          = match["name"],
-                        neuron_type   = match["neuron_type"] or ext.neuron_type,
-                        importance    = match.get("importance") or match.get("confidence", 1.0),
-                        confidence    = match.get("importance") or match.get("confidence", 1.0),
-                        decay_rate    = match.get("decay_rate", 0.008),
-                        confirmations = match.get("confirmations", 0),
-                        attributes    = attrs,
-                    )
+                    neurons[idx] = self._merged_neuron(match, ext, vec)
                     merged.add(match["uuid"])
 
         return neurons, merged, list(state.values())
+
+    def _merged_neuron(
+        self, match: dict[str, Any], ext: Any, vec: list[float],
+    ) -> Neuron:
+        """Build the merged Neuron for a dedup match, preserving DB state.
+
+        A re-mention must not wipe what the graph has accumulated: attributes
+        merge as DB ∪ incoming (incoming wins per-key, insights appended),
+        and the DB TTL survives unless the extraction supplies a new one.
+        """
+        db_attrs: dict[str, Any] = {}
+        raw = match.get("attributes")
+        if raw:
+            try:
+                db_attrs = json.loads(raw)
+            except (TypeError, ValueError):
+                log.warning("neuron_attrs_unparseable", uuid=match["uuid"])
+        attrs = {**db_attrs, **dict(ext.attributes)}
+        if ext.insights:
+            prev = db_attrs.get("insights")
+            prev = prev if isinstance(prev, list) else []
+            attrs["insights"] = list(dict.fromkeys([*prev, *ext.insights]))
+
+        expires = _parse_date(ext.expires_at)
+        if expires is None:
+            db_exp = match.get("expires_at")
+            if db_exp is not None:
+                expires = db_exp.to_native() if hasattr(db_exp, "to_native") else db_exp
+
+        n = Neuron(
+            uuid          = match["uuid"],
+            name          = match["name"],
+            neuron_type   = match["neuron_type"] or ext.neuron_type,
+            importance    = match.get("importance") or match.get("confidence") or 1.0,
+            confidence    = match.get("importance") or match.get("confidence") or 1.0,
+            decay_rate    = match.get("decay_rate") or 0.008,
+            confirmations = match.get("confirmations") or 0,
+            attributes    = attrs,
+            expires_at    = expires,
+        )
+        n.name_embedding = vec
+        return n
 
     async def _vector_match(
         self, vec: list[float],
@@ -1513,7 +1533,9 @@ class Mycelium:
                 "       coalesce(e.importance, e.confidence) AS importance, "
                 "       e.confidence    AS confidence, "
                 "       e.decay_rate    AS decay_rate, "
-                "       e.confirmations AS confirmations",
+                "       e.confirmations AS confirmations, "
+                "       e.attributes    AS attributes, "
+                "       e.expires_at    AS expires_at",
                 {"vec": vec, "thr": self._s.dedup.cosine_threshold},
             )
             return rows[0] if rows else None
@@ -1538,6 +1560,8 @@ class Mycelium:
                 "       e.confidence    AS confidence, "
                 "       e.decay_rate    AS decay_rate, "
                 "       e.confirmations AS confirmations, "
+                "       e.attributes    AS attributes, "
+                "       e.expires_at    AS expires_at, "
                 "       score",
                 {
                     "vec": vec,
@@ -1568,6 +1592,7 @@ class Mycelium:
                 rows = await self._c.driver.execute_query(
                     "MATCH (a:Neuron)-[s:SYNAPSE]->(b:Neuron) "
                     "WHERE a.uuid IN $uuids AND s.expired_at IS NULL "
+                    "  AND s.invalid_at IS NULL "
                     "RETURN a.uuid AS uuid, s.fact AS fact "
                     "LIMIT 30",
                     {"uuids": existing_uuids},
@@ -1625,6 +1650,7 @@ class Mycelium:
             rows = await self._c.driver.execute_query(
                 "MATCH (e:Neuron)-[f:SYNAPSE]->() "
                 "WHERE e.uuid IN $uuids AND f.expired_at IS NULL "
+                "  AND f.invalid_at IS NULL "
                 "RETURN f.uuid AS uuid, f.fact_embedding AS emb, "
                 "       f.fact AS fact, f.confidence AS conf",
                 {"uuids": list(merged)},
@@ -1890,7 +1916,8 @@ class Mycelium:
                     "    n.origin         = e.origin, "
                     "    n.created_at     = coalesce(n.created_at, datetime(e.created_at)), "
                     "    n.expires_at     = CASE WHEN e.expires_at IS NOT NULL "
-                    "                        THEN datetime(e.expires_at) END",
+                    "                        THEN datetime(e.expires_at) "
+                    "                        ELSE n.expires_at END",
                     {"batch": [
                         {
                             "uuid":          n.uuid,
@@ -1959,17 +1986,22 @@ class Mycelium:
                     ]},
                 )
 
-            # ── Expire contradicted synapses ───────────────
-            contradicts = [
-                s.attributes["contradicts"]
+            # ── Invalidate superseded synapses ─────────────
+            # Supersession is a world-state change: the old fact stops being
+            # true, but the record must survive (bi-temporal history).
+            # invalid_at marks that; expired_at is reserved for tombstones
+            # (delete_synapse / TTL) which `tend prune` physically deletes.
+            superseded = [
+                {"old": s.attributes["contradicts"], "new": s.uuid}
                 for s in synapses if "contradicts" in s.attributes
             ]
-            if contradicts:
+            if superseded:
                 await run(
-                    "UNWIND $uuids AS uuid "
-                    "MATCH ()-[r:SYNAPSE {uuid: uuid}]->() "
-                    "SET r.expired_at = datetime()",
-                    {"uuids": contradicts},
+                    "UNWIND $batch AS d "
+                    "MATCH ()-[r:SYNAPSE {uuid: d.old}]->() "
+                    "SET r.invalid_at    = coalesce(r.invalid_at, datetime()), "
+                    "    r.superseded_by = d.new",
+                    {"batch": superseded},
                 )
 
             # ── Duplicate synapses provenance ──────────────

@@ -416,7 +416,7 @@ class HybridSearch:
                 f"CALL db.index.vector.queryRelationships('synapse_emb', $n, $vec) "
                 f"YIELD relationship AS r, score "
                 f"MATCH (s)-[r]->(t) "
-                f"WHERE r.expired_at IS NULL "
+                f"WHERE r.expired_at IS NULL AND r.invalid_at IS NULL "
                 f"RETURN {_S_COLS}, score",
                 {"n": n, "vec": vec},
             )
@@ -442,7 +442,7 @@ class HybridSearch:
                 f"CALL db.index.fulltext.queryRelationships('synapse_ft', $q) "
                 f"YIELD relationship AS r, score "
                 f"MATCH (s)-[r]->(t) "
-                f"WHERE r.expired_at IS NULL "
+                f"WHERE r.expired_at IS NULL AND r.invalid_at IS NULL "
                 f"RETURN {_S_COLS}, score "
                 f"LIMIT $n",
                 {"q": query, "n": n},
@@ -467,7 +467,7 @@ class HybridSearch:
                 f"MATCH path = (c:Neuron {{uuid: $center}})"
                 f"-[:SYNAPSE*1..{depth}]-(e:Neuron) "
                 f"WHERE ALL(r IN relationships(path) "
-                f"  WHERE r.expired_at IS NULL) "
+                f"  WHERE r.expired_at IS NULL AND r.invalid_at IS NULL) "
                 f"  AND e.uuid <> $center "
                 f"  AND e.expired_at IS NULL "
                 f"  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "

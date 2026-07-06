@@ -19,7 +19,7 @@ RETURN e.uuid          AS id,
 
 GRAPH_EDGES = """
 MATCH (a:Neuron)-[f:SYNAPSE]->(b:Neuron)
-WHERE f.expired_at IS NULL
+WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN f.uuid       AS id,
        a.uuid       AS source,
        b.uuid       AS target,
@@ -30,7 +30,7 @@ RETURN f.uuid       AS id,
 
 GRAPH_STATS = """
 OPTIONAL MATCH (e:Neuron) WITH count(e) AS neurons
-OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL
+OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN neurons, count(f) AS synapses
 """
 
@@ -38,7 +38,7 @@ RETURN neurons, count(f) AS synapses
 
 NEURON_SYNAPSES = """
 MATCH (e:Neuron {uuid: $uuid})-[f:SYNAPSE]-(other:Neuron)
-WHERE f.expired_at IS NULL
+WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN f.fact        AS fact,
        f.relation    AS relation,
        f.confidence  AS conf,
@@ -80,7 +80,7 @@ MATCH (c:Neuron {uuid: $uuid})-[:SYNAPSE*1..2]-(n:Neuron)
 WITH collect(DISTINCT n.uuid) + [$uuid] AS scope
 MATCH (a:Neuron)-[f:SYNAPSE]->(b:Neuron)
 WHERE a.uuid IN scope AND b.uuid IN scope
-  AND f.expired_at IS NULL
+  AND f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN f.uuid       AS id,
        a.uuid       AS source,
        b.uuid       AS target,

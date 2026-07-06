@@ -32,6 +32,8 @@ expired_at ─ when it was soft-deleted (NULL = active)
 
 This separates **what reality says** (valid/invalid) from **what we know** (created/expired). Old facts can be invalidated without being deleted — useful for contradiction handling and audit.
 
+Invariant: contradiction SUPERSEDE sets `invalid_at` (+ `superseded_by` → the replacing fact) and the record **survives** `tend prune`. `expired_at` is reserved for genuine tombstones (`delete_synapse`, past-TTL) — those `prune` physically deletes. Current-fact readers (search, dedup, render, sleep) filter both: `expired_at IS NULL AND invalid_at IS NULL`; timeline and provenance queries keep invalidated records visible.
+
 Neurons are simpler: only `created_at`, `expires_at`, and a `freshness` timestamp that drives decay (see below). No bi-temporal model on entities — only on facts.
 
 ## Decay + consolidation

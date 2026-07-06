@@ -2033,6 +2033,7 @@ async def get_domain(name: str) -> dict[str, Any]:
 @mcp.tool
 async def create_domain(
     name:            str,
+    slug:            str = "",
     description:     str = "",
     vault_prefix:    str = "",
     anchor_neuron:   str = "",
@@ -2054,6 +2055,7 @@ async def create_domain(
 
     Args:
         name:            Domain name.
+        slug:            URL-safe identifier (default: slugified name).
         description:     Human-readable purpose.
         vault_prefix:    Vault subdirectory (e.g., "health/blood_tests/").
         anchor_neuron:   Hub neuron name in graph.
@@ -2068,10 +2070,23 @@ async def create_domain(
         chart_style_json: JSON chart style: {"type","color","show_point","point_size","height"}.
     """
     if g := _gate("write"): return g
+    # Keyword-only: impl_create_domain has `slug` as its 2nd parameter —
+    # positional forwarding shifted every argument one slot (C3).
     return await impl_create_domain(
-        name, description, vault_prefix, anchor_neuron, anchor_type,
-        triggers, skill, focus, neuron_types, tracking_fields,
-        tracking_fields_json, analysis, chart_style_json,
+        name                 = name,
+        slug                 = slug,
+        description          = description,
+        vault_prefix         = vault_prefix,
+        anchor_neuron        = anchor_neuron,
+        anchor_type          = anchor_type,
+        triggers             = triggers,
+        skill                = skill,
+        focus                = focus,
+        neuron_types         = neuron_types,
+        tracking_fields      = tracking_fields,
+        tracking_fields_json = tracking_fields_json,
+        analysis             = analysis,
+        chart_style_json     = chart_style_json,
     )
 
 

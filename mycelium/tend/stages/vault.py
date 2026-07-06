@@ -76,7 +76,15 @@ async def vault_compact(
 
         index_paths = set(index.keys())
 
-        orphan_index = sorted(index_paths - disk_files)   # in index, not on disk
+        # Orphan-index detection checks the filesystem directly, not the
+        # skip-filtered walk: storage buckets like CORTEX/_other/ are
+        # legitimately indexed but excluded by the walk's '_' rule — deriving
+        # orphans from the walk alone would drop live bindings. Never delete
+        # an entry whose file exists.
+        orphan_index = sorted(
+            path for path in index_paths - disk_files
+            if not (root / path).is_file()
+        )
         orphan_files = sorted(disk_files - index_paths)   # on disk, not in index
 
         # 3. Optional graph cross-check: index entries pointing at missing Signals
