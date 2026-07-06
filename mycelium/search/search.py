@@ -36,11 +36,19 @@ log = structlog.get_logger()
 
 # ── Lucene escape ─────────────────────────────────────────
 
-_LUCENE_ESC = frozenset('+-&|!(){}[]^"~*?:\\/')
+_LUCENE_ESC     = frozenset('+-&|!(){}[]^"~*?:\\/')
+_LUCENE_BOOL_RE = re.compile(r"\b(AND|OR|NOT)\b")
 
 
 def _escape(q: str) -> str:
-    """Escape Lucene special chars for fulltext search."""
+    """Escape Lucene special chars for fulltext search.
+
+    Bare boolean operators (AND/OR/NOT) are lowercased — as operators they
+    make Lucene reject queries like "cats AND dogs" with a parse error,
+    which silently killed the whole lexical channel; the analyzer
+    lowercases terms anyway, so matching is unaffected.
+    """
+    q = _LUCENE_BOOL_RE.sub(lambda m: m.group(0).lower(), q)
     return "".join(f"\\{c}" if c in _LUCENE_ESC else c for c in q)
 
 
@@ -321,15 +329,18 @@ class HybridSearch:
             embedder     = self._emb,
             driver       = self._drv,
             owner_uuid   = self._owner_uuid,
+            top_k        = n,
         )
         n_scored = await self._pipeline.run(n_scored, ctx)
 
-        # [5] Build results
+        # [5] Build results — filter BEFORE slicing so low-score entries
+        # don't eat top-n slots and leave the result under-filled.
         min_sc = self._cfg.min_score
+        n_kept = [(u, s) for u, s in n_scored if u in n_data and s >= min_sc]
+        s_kept = [(u, s) for u, s in s_scored if u in s_data and s >= min_sc]
         neurons = [
             ScoredNeuron(neuron=_to_neuron(n_data[uid]), score=sc)
-            for uid, sc in n_scored[:n]
-            if uid in n_data and sc >= min_sc
+            for uid, sc in n_kept[:n]
         ]
         synapses = [
             ScoredSynapse(
@@ -337,8 +348,7 @@ class HybridSearch:
                 source_name=s_data[uid].get("source_name", ""),
                 target_name=s_data[uid].get("target_name", ""),
             )
-            for uid, sc in s_scored[:n]
-            if uid in s_data and sc >= min_sc
+            for uid, sc in s_kept[:n]
         ]
 
         # Provenance signals
@@ -363,15 +373,20 @@ class HybridSearch:
         data: dict[str, dict],
     ) -> list[str]:
         try:
+            # Over-fetch 3x: liveness filters run AFTER the index query, so
+            # expired/TTL'd hits would otherwise eat into the top-n.
             rows = await self._drv.execute_query(
-                f"CALL db.index.vector.queryNodes('{index}', $n, $vec) "
+                f"CALL db.index.vector.queryNodes('{index}', $k, $vec) "
                 f"YIELD node AS e, score "
                 f"WHERE e.expired_at IS NULL "
                 f"  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
-                f"RETURN {_N_COLS}, score",
-                {"n": n, "vec": vec},
+                f"RETURN {_N_COLS}, score "
+                f"ORDER BY score DESC LIMIT $n",
+                {"n": n, "k": n * 3, "vec": vec},
             )
-        except Exception:
+        except Exception as e:
+            log.warning("retrieval_failed", channel=f"vec_neurons:{index}",
+                        error=str(e))
             return []
         uuids = []
         for r in rows:
@@ -392,11 +407,15 @@ class HybridSearch:
             rows = await self._drv.execute_query(
                 f"CALL db.index.fulltext.queryNodes('neuron_ft', $q) "
                 f"YIELD node AS e, score "
+                f"WHERE e.expired_at IS NULL "
+                f"  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
                 f"RETURN {_N_COLS}, score "
                 f"LIMIT $n",
                 {"q": query, "n": n},
             )
-        except Exception:
+        except Exception as e:
+            log.warning("retrieval_failed", channel="bm25_neurons",
+                        error=str(e))
             return []
         uuids = []
         for r in rows:
@@ -413,14 +432,17 @@ class HybridSearch:
     ) -> list[str]:
         try:
             rows = await self._drv.execute_query(
-                f"CALL db.index.vector.queryRelationships('synapse_emb', $n, $vec) "
+                f"CALL db.index.vector.queryRelationships('synapse_emb', $k, $vec) "
                 f"YIELD relationship AS r, score "
                 f"MATCH (s)-[r]->(t) "
                 f"WHERE r.expired_at IS NULL AND r.invalid_at IS NULL "
-                f"RETURN {_S_COLS}, score",
-                {"n": n, "vec": vec},
+                f"RETURN {_S_COLS}, score "
+                f"ORDER BY score DESC LIMIT $n",
+                {"n": n, "k": n * 3, "vec": vec},
             )
-        except Exception:
+        except Exception as e:
+            log.warning("retrieval_failed", channel="vec_synapses",
+                        error=str(e))
             return []
         uuids = []
         for r in rows:
@@ -447,7 +469,9 @@ class HybridSearch:
                 f"LIMIT $n",
                 {"q": query, "n": n},
             )
-        except Exception:
+        except Exception as e:
+            log.warning("retrieval_failed", channel="bm25_synapses",
+                        error=str(e))
             return []
         uuids = []
         for r in rows:
@@ -476,7 +500,8 @@ class HybridSearch:
                 f"ORDER BY dist ASC LIMIT $n",
                 {"center": center, "n": n},
             )
-        except Exception:
+        except Exception as e:
+            log.warning("retrieval_failed", channel="bfs", error=str(e))
             return []
         uuids = []
         for r in rows:

@@ -259,6 +259,7 @@ def serve(
         await drv.__aenter__()
         try:
             await drv.build_indices()
+            await drv.verify_vector_dims(settings.semantic.dimensions)
         finally:
             await drv.close()
     try:

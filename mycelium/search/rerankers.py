@@ -32,6 +32,7 @@ class RerankerContext:
     embedder:     EmbedderClient | None  = None    # R2.1
     driver:       GraphDriver | None     = None    # R2.2
     owner_uuid:   str                    = ""      # R2.2
+    top_k:        int | None             = None    # per-request override
 
 
 # ── Protocol ─────────────────────────────────────────────
@@ -150,19 +151,32 @@ class MMRReranker:
         if not items or not context.load_vectors:
             return items
 
-        top_k = context.config.top_k
+        top_k = context.top_k or context.config.top_k
         lam   = context.config.mmr_lambda
-        uids  = [uid for uid, _ in items[:top_k * 2]]
-        vectors = await context.load_vectors(uids)
+        # Load vectors for ALL candidates: items beyond an arbitrary cutoff
+        # would get max_sim=0 (no diversity penalty) and systematically win.
+        vectors = await context.load_vectors([uid for uid, _ in items])
+
+        # Min-max normalize relevance to [0, 1]: incoming scores are
+        # RRF-scaled (~0.005-0.03) while cosine similarity is ~0.3-1.0 —
+        # blending raw values lets the diversity term dominate by two
+        # orders of magnitude (audit M10).
+        raw = [sc for _, sc in items]
+        lo, hi = min(raw), max(raw)
+        span   = hi - lo
+        rel = {
+            uid: ((sc - lo) / span if span > 0 else 1.0)
+            for uid, sc in items
+        }
 
         remaining = dict(items)
         selected: list[tuple[str, float]] = []
 
         while remaining and len(selected) < top_k:
             best_uid   = ""
-            best_score = -1.0
+            best_score = -2.0
 
-            for uid, rel_score in remaining.items():
+            for uid in remaining:
                 vec = vectors.get(uid)
                 if not vec:
                     max_sim = 0.0
@@ -173,7 +187,7 @@ class MMRReranker:
                          if s_uid in vectors),
                         default=0.0,
                     )
-                mmr = lam * rel_score - (1 - lam) * max_sim
+                mmr = lam * rel[uid] - (1 - lam) * max_sim
                 if mmr > best_score:
                     best_score = mmr
                     best_uid   = uid
@@ -199,6 +213,12 @@ class CrossEncoderReranker:
         if not context.config.cross_encoder_enabled:
             return items
         if not context.embedder or not context.query:
+            return items
+        if not hasattr(context.embedder, "rerank"):
+            # LocalEmbedder has no rerank endpoint — degrade gracefully
+            # instead of raising AttributeError on every search (audit M12).
+            log.warning("cross_encoder_unavailable",
+                        embedder=type(context.embedder).__name__)
             return items
 
         top_n = context.config.cross_encoder_top_n
