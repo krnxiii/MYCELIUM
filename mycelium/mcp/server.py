@@ -94,6 +94,7 @@ _bg_sem = asyncio.Semaphore(2)             # max concurrent extractions
 
 _VAULT_SYNC_DELAY = 5.0  # seconds after last mutation
 _sync_handle: asyncio.TimerHandle | None = None
+_sync_task:   asyncio.Task | None        = None  # strong ref (GC guard)
 
 
 def _schedule_vault_sync() -> None:
@@ -107,9 +108,9 @@ def _schedule_vault_sync() -> None:
 
 def _fire_vault_sync() -> None:
     """Create background task for vault sync."""
-    global _sync_handle
+    global _sync_handle, _sync_task
     _sync_handle = None
-    asyncio.create_task(_run_vault_sync())
+    _sync_task = asyncio.create_task(_run_vault_sync())
 
 
 async def _run_vault_sync() -> None:
@@ -2556,10 +2557,17 @@ async def _ingest_unindexed(
         if not abs_path.exists():
             continue
         try:
-            # Register in vault index if missing (no copy — file is already in vault)
+            # Register in vault index if missing (no copy — file is already
+            # in vault). register() indexes THIS path even when the content
+            # duplicates another entry — the old return-the-original
+            # behavior let every ingest run rebind the original file's
+            # signal_uuid and mint a duplicate Signal (audit C7).
             entry = vault.get_by_path(rel_path)
             if not entry:
                 entry = vault.register(rel_path)
+            if entry is None or entry.relative_path != rel_path:
+                errors.append(f"{rel_path}: registration failed")
+                continue
 
             content = vault.extract_text(entry)
             if not content:
@@ -2573,6 +2581,15 @@ async def _ingest_unindexed(
                 source_desc = f"file:{entry.relative_path}",
             )
             vault.update_signal_uuid(entry.relative_path, signal.uuid)
+            # Graph-level binding at binding time (audit M33) — relations
+            # and move detection must not wait for the startup migration.
+            from mycelium.vault.file import bind_signal_to_file
+            await bind_signal_to_file(
+                my._c.driver,
+                signal_uuid   = signal.uuid,
+                relative_path = entry.relative_path,
+                content_hash  = entry.content_hash,
+            )
 
             # Inject frontmatter
             if my._s.obsidian.enabled:

@@ -14,15 +14,14 @@ are excluded (covers _AGENT/, _WIKI/, .index.json, .git, etc.).
 
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
 
 import structlog
 
 from mycelium.config import TendSettings, VaultSettings
 from mycelium.driver.neo4j_driver import Neo4jDriver
 from mycelium.tend.stages.decay import StageResult
+from mycelium.vault.storage import VaultIndexCorruptError, VaultStorage
 
 log = structlog.get_logger()
 
@@ -43,23 +42,22 @@ async def vault_compact(
     t0   = time.monotonic()
 
     try:
-        root       = v.path
-        index_path = root / ".index.json"
+        root = v.path
 
         if not root.exists():
             res.extra["skipped"] = "vault_root_missing"
             res.elapsed_ms = int((time.monotonic() - t0) * 1000)
             return res
 
-        # 1. Load index
-        index: dict[str, dict] = {}
-        if index_path.exists():
-            try:
-                index = json.loads(index_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError) as exc:
-                res.errors.append(f"index_unreadable: {exc}")
-                res.elapsed_ms = int((time.monotonic() - t0) * 1000)
-                return res
+        # 1. Load index through the single owner (VaultStorage) — raises
+        # on a corrupt index instead of treating it as empty (audit M34).
+        storage = VaultStorage(v)
+        try:
+            index: dict[str, dict] = storage._load_index()
+        except VaultIndexCorruptError as exc:
+            res.errors.append(f"index_unreadable: {exc}")
+            res.elapsed_ms = int((time.monotonic() - t0) * 1000)
+            return res
 
         # 2. Walk disk for active files (skip hidden / underscore dirs)
         disk_files: set[str] = set()
@@ -123,12 +121,10 @@ async def vault_compact(
         })
         res.processed = len(orphan_index)  # only auto-fixable category
 
-        # 4. Auto-fix: drop orphan index entries (file already gone)
+        # 4. Auto-fix: drop orphan index entries (file already gone) —
+        # through the single writer, never a direct file rewrite.
         if orphan_index and not dry_run:
-            for path in orphan_index:
-                index.pop(path, None)
-            payload = json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8")
-            _atomic_write(index_path, payload)
+            storage.drop_entries(orphan_index)
 
     except Exception as exc:
         res.errors.append(f"{type(exc).__name__}: {exc}")
@@ -137,7 +133,7 @@ async def vault_compact(
     res.elapsed_ms = int((time.monotonic() - t0) * 1000)
     log.info(
         "vault_compact_done",
-        orphan_index = len(res.extra.get("samples", {}).get("orphan_index", [])),
+        orphan_index = res.extra.get("orphan_index", 0),
         orphan_files = res.extra.get("orphan_files", 0),
         dangling     = res.extra.get("dangling", 0),
         elapsed_ms   = res.elapsed_ms,
@@ -145,9 +141,3 @@ async def vault_compact(
     )
     return res
 
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Write to a temp file then rename — avoids partial-write corruption."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)

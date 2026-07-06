@@ -127,17 +127,11 @@ def _check_docling() -> bool:
 
 
 def _docling_convert(path: Path, mime: str) -> str:
-    """Convert via Docling library. Falls back to text extraction."""
+    """Convert via Docling library. Hard error when docling is missing."""
     if not _check_docling():
-        # Graceful fallback: try reading as text
-        log.warning("docling_not_installed", path=path.name,
-                    hint="pip install docling")
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            if text.strip():
-                return text
-        except Exception:
-            pass
+        # No text fallback for binary formats: reading a PDF/DOCX with
+        # errors="replace" produces '%PDF-1.7' mojibake that passes the
+        # truthiness check and gets ingested as document text (audit M35).
         raise ValueError(
             f"Cannot convert {path.name} ({mime}): "
             "install docling for PDF/DOCX/PPTX support: pip install docling"

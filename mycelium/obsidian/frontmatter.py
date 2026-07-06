@@ -8,8 +8,14 @@ from pathlib import Path
 
 import yaml
 
-_FM_RE = re.compile(r"\A---\n(.*?)---\n?", re.DOTALL)
+# Closing '---' must sit at line start: the old r"\A---\n(.*?)---\n?" matched
+# a '---' INSIDE a value ("date: 2024-01-01 --- draft"), silently truncating
+# the block and leaking the remainder into the body on rewrite (audit M31).
+# CRLF tolerated; BOM stripped in parse().
+_FM_RE = re.compile(r"\A---\r?\n(.*?)^---[ \t]*\r?(?:\n|\Z)",
+                    re.DOTALL | re.MULTILINE)
 _MYCELIUM_PREFIX = "mycelium_"
+_BOM = "\ufeff"
 
 
 def parse(text: str) -> tuple[dict, str]:
@@ -17,6 +23,8 @@ def parse(text: str) -> tuple[dict, str]:
 
     Returns ({}, text) when no frontmatter found.
     """
+    if text.startswith(_BOM):
+        text = text[len(_BOM):]
     m = _FM_RE.match(text)
     if not m:
         return {}, text
@@ -24,8 +32,22 @@ def parse(text: str) -> tuple[dict, str]:
         fm = yaml.safe_load(m.group(1)) or {}
     except yaml.YAMLError:
         return {}, text
+    if not isinstance(fm, dict):
+        return {}, text
     body = text[m.end():]
     return fm, body
+
+
+def has_unparseable_frontmatter(text: str) -> bool:
+    """True when the file LOOKS like it has a frontmatter block that we
+    cannot parse — writers must skip such files instead of rewriting them
+    (a rewrite would prepend a second block above the user's real one)."""
+    if text.startswith(_BOM):
+        text = text[len(_BOM):]
+    if not text.startswith("---"):
+        return False
+    fm, body = parse(text)
+    return not fm and body == text
 
 
 def render(fm: dict, body: str) -> str:

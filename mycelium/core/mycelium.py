@@ -422,8 +422,18 @@ class Mycelium:
             {"uuid": result[0].uuid, "hash": entry.content_hash},
         )
 
-        # Link signal UUID back to vault index
+        # Link signal UUID back to vault index + graph-level STORED_AT
+        # binding (audit M33: previously only vault_link and the startup
+        # migration created the edge — relations/move detection were
+        # no-ops for add_file ingests until the next process restart).
         self._vault.update_signal_uuid(entry.relative_path, result[0].uuid)
+        from mycelium.vault.file import bind_signal_to_file
+        await bind_signal_to_file(
+            self._c.driver,
+            signal_uuid   = result[0].uuid,
+            relative_path = entry.relative_path,
+            content_hash  = entry.content_hash,
+        )
 
         # Inject Obsidian frontmatter if enabled
         if self._s.obsidian.enabled:
