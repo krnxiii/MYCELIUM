@@ -176,6 +176,7 @@ class Mycelium:
             all_questions: list[ExtractedQuestion]  = []
             chunk_meta:    list[dict[str, int]]    = []
             file_category: str                      = ""
+            failed_chunks: int                      = 0  # M25: partial coverage
             # One consolidation per neuron per signal — chunk/gleaning/
             # analysis passes re-mention the same neurons (audit M2).
             consolidated:  set[str]                 = set()
@@ -209,6 +210,8 @@ class Mycelium:
                     extraction_focus=extraction_focus,
                 )
                 for i, (chunk, result) in enumerate(zip(chunks, extract_results)):
+                    if result.failed:
+                        failed_chunks += 1
                     if not file_category and result.file_category:
                         file_category = result.file_category
                     if not result.neurons and not result.synapses:
@@ -335,14 +338,20 @@ class Mycelium:
             # Owner auto-detect (S1.4)
             await self._auto_detect_owner(all_neurons)
 
-            signal.status = SignalStatus.saved
+            # M25: a chunk that failed extraction (even after the no-session
+            # retry) leaves a coverage hole. Mark the signal `partial` so it is
+            # visible to re_extract / audits instead of masquerading as saved.
+            signal.status = (
+                SignalStatus.partial if failed_chunks else SignalStatus.saved
+            )
             await self._update_status(signal)
 
             ms = int((time.monotonic() - t0) * 1000)
             _p("done", f"{len(all_neurons)} neurons, {len(all_synapses)} synapses ({ms}ms)")
             log.info("signal_saved",
                      neurons=len(all_neurons), synapses=len(all_synapses),
-                     questions=len(all_questions),
+                     questions=len(all_questions), failed_chunks=failed_chunks,
+                     status=signal.status.value,
                      chunks=len(chunks), duration_ms=ms)
             n_contra = sum(
                 1 for s in all_synapses if s.attributes.get("contradiction_of")
@@ -1298,7 +1307,7 @@ class Mycelium:
         for i, r in enumerate(results):
             if isinstance(r, BaseException):
                 log.error("chunk_extract_failed", idx=i, error=str(r))
-                out.append(IngestResult())
+                out.append(IngestResult(failed=True))  # M25: mark, don't hide
             else:
                 out.append(r)
         return out

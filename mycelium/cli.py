@@ -306,26 +306,45 @@ def serve(
     # Auto-start render server if enabled
     if settings.render.enabled:
         try:
-            import signal
             import uvicorn as _uvi
             from mycelium.render.server import app as _render_app
             _rh, _rp = settings.render.host, settings.render.port
             _old = _render_alive()
             if _old:
                 _render_stop()
-            signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # auto-reap child
+            # Daemonize via double-fork so the render server reparents to init
+            # (pid 1 reaps it). The old code set SIGCHLD→SIG_IGN in THIS process
+            # to auto-reap the single-fork child — but that also made the kernel
+            # auto-reap every `claude` CLI subprocess, so asyncio's watcher read
+            # rc=255 for all of them and real exit codes (incl. session expiry)
+            # were lost (audit M17).
             child = os.fork()
             if child:
-                _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
-                _RENDER_PID.write_text(str(child))
-                typer.echo(f"Graph viewer → http://localhost:{_rp}")
+                # MCP parent: reap the short-lived intermediate; after it exits
+                # the pid file is already written, so no read race.
+                os.waitpid(child, 0)
+                if _render_alive():
+                    typer.echo(f"Graph viewer → http://localhost:{_rp}")
             else:
+                # Intermediate child: detach, fork the real server, record its
+                # pid, then exit so the grandchild is orphaned onto init.
                 os.setsid()
+                grandchild = os.fork()
+                if grandchild:
+                    _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
+                    _RENDER_PID.write_text(str(grandchild))
+                    os._exit(0)
+                # Grandchild: the actual uvicorn render server.
                 devnull = open(os.devnull, "w")  # noqa: SIM115
                 os.dup2(devnull.fileno(), 1)
                 os.dup2(devnull.fileno(), 2)
                 devnull.close()
-                _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
+                try:
+                    _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
+                finally:
+                    # Never unwind back into the parent's code path from a fork
+                    # child — skip atexit/finally that would double-run (M17).
+                    os._exit(0)
         except ImportError:
             typer.echo("Render enabled but deps missing — skipping", err=True)
 

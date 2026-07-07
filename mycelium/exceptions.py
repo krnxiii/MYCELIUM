@@ -18,4 +18,8 @@ class EmbeddingError(MyceliumError):
 
 
 class ExtractionError(MyceliumError):
-    """LLM extraction failure."""
+    """LLM extraction failure (permanent — do not retry)."""
+
+
+class TransientLLMError(MyceliumError):
+    """Recoverable LLM/CLI error (rate limit, overload, 5xx) — retry with backoff."""
