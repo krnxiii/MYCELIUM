@@ -269,10 +269,14 @@ def serve(
         raise typer.Exit(1) from exc
 
     try:
+        from mycelium.mcp.server import _normalize_gates
         from mycelium.mcp.server import mcp as mcp_server
     except ImportError as exc:
         typer.echo("fastmcp not installed. pip install mycelium[mcp]", err=True)
         raise typer.Exit(1) from exc
+    # Enforce documented gate default (read=ON, write=OFF) at server start,
+    # not import time — a blessed HTTP deployment re-enables write (audit M15).
+    _normalize_gates(transport=transport, authed=bool(auth_token))
     # Bearer token auth for HTTP transport
     if transport != "stdio":
         if not auth_token:

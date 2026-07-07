@@ -22,7 +22,8 @@ log = structlog.get_logger()
 
 
 _EMBEDDING_KEYS = frozenset({
-    "name_embedding", "summary_embedding", "fact_embedding", "content_embedding",
+    "name_embedding", "summary_embedding", "fact_embedding",
+    "content_embedding", "file_embedding",
 })
 
 
@@ -121,12 +122,22 @@ async def import_subgraph(
     """Import previously exported subgraph. Returns counts."""
     t0       = time.monotonic()
     meta     = data.get("metadata", {})
-    re_embed = meta.get("embedding_model", "") != settings.semantic.model_name
 
     neurons  = data.get("neurons", [])
     synapses = data.get("synapses", [])
     signals  = data.get("signals", [])
     mentions = data.get("mentions", [])
+
+    # Re-embed when the model changed OR the payload has no vectors —
+    # export strips embeddings by default, and gating re-embedding on model
+    # inequality alone landed same-model imports with no vectors at all:
+    # invisible to vector search/dedup/sleep, never backfilled (audit M8).
+    model_changed = meta.get("embedding_model", "") != settings.semantic.model_name
+    re_embed = (
+        model_changed
+        or any(not n.get("name_embedding") for n in neurons)
+        or any(not s.get("fact_embedding") for s in synapses)
+    )
 
     # ── Signals (create if not exists) ────────────────
     if signals:
@@ -263,7 +274,8 @@ def _ser_mention(m: Any, sig_uuid: str, n_uuid: str) -> dict[str, Any]:
 
 
 _ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
-_DATETIME_KEYS = {"created_at", "freshness", "expired_at", "valid_at", "invalid_at"}
+_DATETIME_KEYS = {"created_at", "freshness", "expired_at", "valid_at",
+                  "invalid_at", "expires_at", "last_swept_at"}
 
 
 def _import_props(d: dict[str, Any]) -> dict[str, Any]:

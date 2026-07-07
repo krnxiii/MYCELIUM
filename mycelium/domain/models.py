@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ntpath
 import re
 from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -120,3 +122,20 @@ class DomainBlueprint(BaseModel):
             if not data.get("slug") and data.get("name"):
                 data["slug"] = slugify(str(data["name"]))
         return data
+
+    @field_validator("vault_prefix")
+    @classmethod
+    def _safe_vault_prefix(cls, v: str) -> str:
+        """Reject a prefix that would escape the vault root.
+
+        ``vault_prefix`` is joined to the vault path for markers, metric
+        files, and dashboards. An absolute path or a ``..`` segment would let
+        a domain write outside the vault (audit M27). Make it impossible by
+        construction rather than guarding each write site.
+        """
+        if not v:
+            return v
+        p = PurePosixPath(v)
+        if p.is_absolute() or ntpath.isabs(v) or ".." in p.parts:
+            raise ValueError(f"vault_prefix must be a relative in-vault path: {v!r}")
+        return v

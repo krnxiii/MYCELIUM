@@ -102,9 +102,26 @@ def template_parse(
 # File operations
 # ---------------------------------------------------------------------------
 
+_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+
+def _contained(vault_root: Path, target: Path) -> Path:
+    """Resolve ``target`` and assert it stays under ``vault_root``.
+
+    Metric paths are assembled from caller-supplied ``vault_prefix``/``date``.
+    An absolute prefix, a ``..`` segment, or a slash-bearing date would
+    otherwise let a write land anywhere on disk (audit M27). Fail loudly.
+    """
+    root = vault_root.resolve()
+    resolved = target.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"path escapes vault root: {target}")
+    return resolved
+
+
 def _data_dir(vault_root: Path, vault_prefix: str) -> Path:
     """Ensure data/ directory exists under vault prefix."""
-    d = vault_root / vault_prefix / "data"
+    d = _contained(vault_root, vault_root / vault_prefix / "data")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -117,8 +134,10 @@ def write_metric_file(
     body:         str = "",
 ) -> Path:
     """Create or merge vault/{prefix}/data/{date}.md with frontmatter."""
+    if not _DATE_RE.match(date):
+        raise ValueError(f"date must be YYYY-MM-DD, got {date!r}")
     data_dir = _data_dir(vault_root, vault_prefix)
-    path     = data_dir / f"{date}.md"
+    path     = _contained(vault_root, data_dir / f"{date}.md")
 
     if path.exists():
         existing_fm, existing_body = fm.parse(
