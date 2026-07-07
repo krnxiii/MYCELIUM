@@ -61,8 +61,10 @@ async def index() -> FileResponse:
 @app.get("/api/graph")
 async def graph() -> dict[str, Any]:
     drv   = _drv()
-    nodes = await drv.execute_query(GRAPH_NODES)
-    edges = await drv.execute_query(GRAPH_EDGES)
+    limit = load_settings().render.max_nodes
+    nodes = await drv.execute_query(GRAPH_NODES, {"limit": limit})
+    ids   = [n["id"] for n in nodes]
+    edges = await drv.execute_query(GRAPH_EDGES, {"ids": ids})
     stats = await drv.execute_query(GRAPH_STATS)
     s     = stats[0] if stats else {"neurons": 0, "synapses": 0}
     return {

@@ -67,13 +67,23 @@ async def decay_sweep(
                 "MATCH (n:Neuron) "
                 "WHERE n.expired_at IS NULL "
                 "  AND (n.expires_at IS NULL OR n.expires_at > datetime()) "
+                # A neuron missing freshness/decay_rate yields a NULL weight;
+                # Python's sum()/comparison then TypeErrors and aborts the whole
+                # sweep. Skip such rows here (audit P8).
+                "  AND n.freshness  IS NOT NULL "
+                "  AND n.decay_rate IS NOT NULL "
                 "  AND n.uuid > $last_uuid "
                 "WITH n ORDER BY n.uuid ASC LIMIT $batch_size "
+                # Clamp negative age (freshness dated in the future) to 0 so a
+                # bad timestamp can't flip the sign and explode the weight.
                 "WITH n, "
-                "  coalesce(n.importance, n.confidence) * "
-                "  exp(-n.decay_rate * "
-                "    duration.inDays(n.freshness, datetime()).days) AS ew "
-                "RETURN n.uuid AS uuid, ew",
+                "  CASE WHEN duration.inDays(n.freshness, datetime()).days < 0 "
+                "    THEN 0 ELSE duration.inDays(n.freshness, datetime()).days "
+                "  END AS age_days "
+                "WITH n, "
+                "  coalesce(n.importance, n.confidence, 0.0) * "
+                "  exp(-n.decay_rate * age_days) AS ew "
+                "RETURN n.uuid AS uuid, coalesce(ew, 0.0) AS ew",
                 {"last_uuid": last_uuid, "batch_size": s.sweep_batch_size},
             )
             if not page:

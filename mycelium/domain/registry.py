@@ -42,7 +42,10 @@ def load_by_slug(slug: str) -> DomainBlueprint | None:
     if path.exists():
         try:
             return _parse(path)
-        except Exception:
+        except Exception as e:
+            # A corrupt YAML previously read as "domain not found", which then
+            # looked like a chance to create a duplicate. Surface it instead.
+            log.warning("domain_load_failed", slug=slug, path=str(path), error=str(e))
             return None
     return None
 

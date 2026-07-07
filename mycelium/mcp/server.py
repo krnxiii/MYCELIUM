@@ -2728,6 +2728,10 @@ def extraction_resource() -> str:
 if __name__ == "__main__":
     from mycelium.config import load_settings as _load
     _normalize_gates()
+    # Periodic glibc heap trim — the `python -m mycelium.mcp.server` entry
+    # bypassed cli.serve's call, so this container kept the #42 RSS growth.
+    from mycelium.utils.memory import start_periodic_trim
+    start_periodic_trim()
     _mcp_cfg = _load().mcp
     if _mcp_cfg.transport == "stdio":
         mcp.run()

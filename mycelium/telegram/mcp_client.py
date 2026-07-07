@@ -24,45 +24,63 @@ class MCPClient:
         self._token     = auth_token
         self._session:  ClientSession | None = None
         self._stack:    AsyncExitStack | None = None
+        # Single-flight: two handler tasks hitting call_tool while
+        # disconnected would each build a stack + httpx client and leak all
+        # but one (audit P8).
+        self._lock      = asyncio.Lock()
 
     async def connect(self, retries: int = 5, backoff: float = 2.0) -> None:
-        """Connect with retry + exponential backoff."""
-        for attempt in range(1, retries + 1):
-            try:
-                await self._connect_once()
-                return
-            except Exception as exc:
-                if attempt == retries:
-                    raise
-                delay = backoff * attempt
-                log.warning("mcp_client.connect_retry",
-                            attempt=attempt, delay=delay, error=str(exc))
-                await asyncio.sleep(delay)
+        """Connect with retry + exponential backoff (single-flight)."""
+        async with self._lock:
+            if self._session is not None:
+                return  # another task already reconnected
+            for attempt in range(1, retries + 1):
+                try:
+                    await self._connect_once()
+                    return
+                except Exception as exc:
+                    if attempt == retries:
+                        raise
+                    delay = backoff * attempt
+                    log.warning("mcp_client.connect_retry",
+                                attempt=attempt, delay=delay, error=str(exc))
+                    await asyncio.sleep(delay)
 
     async def _connect_once(self) -> None:
-        self._stack = AsyncExitStack()
-        await self._stack.__aenter__()
-
-        headers: dict[str, str] = {}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        http = httpx.AsyncClient(headers=headers, timeout=30.0)
-
-        read, write, _ = await self._stack.enter_async_context(
-            streamable_http_client(self._url, http_client=http),
-        )
-        self._session = await self._stack.enter_async_context(
-            ClientSession(read, write),
-        )
-        await self._session.initialize()
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            headers: dict[str, str] = {}
+            if self._token:
+                headers["Authorization"] = f"Bearer {self._token}"
+            # Own the httpx client through the stack so a failed handshake
+            # can't leak it (it was created but never registered before).
+            http = await stack.enter_async_context(
+                httpx.AsyncClient(headers=headers, timeout=30.0),
+            )
+            read, write, _ = await stack.enter_async_context(
+                streamable_http_client(self._url, http_client=http),
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+        except BaseException:
+            await stack.aclose()          # roll back partial setup
+            raise
+        self._stack   = stack
+        self._session = session
         log.info("mcp_client.connected", url=self._url)
 
     async def close(self) -> None:
-        if self._stack:
-            await self._stack.aclose()
-            self._stack = None
-            self._session = None
+        stack, self._stack, self._session = self._stack, None, None
+        if stack is None:
+            return
+        try:
+            await stack.aclose()
             log.info("mcp_client.closed")
+        except Exception as exc:
+            # anyio can raise if the stack is closed from a different task than
+            # opened it — state is already reset, so just note it.
+            log.warning("mcp_client.close_error", error=str(exc))
 
     async def call_tool(
         self,

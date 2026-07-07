@@ -139,6 +139,7 @@ class RenderSettings(BaseModel):
     enabled:            bool = False
     host:               str  = "127.0.0.1"  # loopback by default; Docker sets 0.0.0.0
     port:               int  = 9633
+    max_nodes:          int  = 2000  # cap /api/graph payload (audit P8)
 
 
 class MCPSettings(BaseModel):

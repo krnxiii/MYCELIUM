@@ -55,41 +55,52 @@ def template_parse(
     for alias, field_name in index:
         if field_name in values:
             continue  # already matched this field
-        pos = norm.find(alias)
-        if pos == -1:
-            continue
-        # skip if this region already consumed
-        alias_range = set(range(pos, pos + len(alias)))
-        if alias_range & used:
-            continue
+        # Try every occurrence at a word boundary (M28): plain substring find
+        # matched "fat" inside "fatigue" and only tried the first hit, silently
+        # recording garbage. A letter (unicode-aware) on either side means the
+        # alias is part of a larger word — skip it; digits are fine ("жим100").
+        pos = -1
+        while True:
+            pos = norm.find(alias, pos + 1)
+            if pos == -1:
+                break
+            end = pos + len(alias)
+            before = norm[pos - 1] if pos > 0 else " "
+            after  = norm[end]     if end < len(norm) else " "
+            if before.isalpha() or after.isalpha():
+                continue  # inside a larger word
+            alias_range = set(range(pos, end))
+            if alias_range & used:
+                continue  # region already consumed
 
-        # look right for number
-        right = text[pos + len(alias):pos + len(alias) + 30]
-        m = _NUM_RE.search(right)
-        if m:
-            num_start = pos + len(alias) + m.start()
-            num_end   = pos + len(alias) + m.end()
-        else:
-            # look left for number
-            left_start = max(0, pos - 20)
-            left = text[left_start:pos]
-            matches = list(_NUM_RE.finditer(left))
-            if matches:
-                m = matches[-1]  # rightmost number before alias
-                num_start = left_start + m.start()
-                num_end   = left_start + m.end()
+            # look right for number
+            right = text[end:end + 30]
+            m = _NUM_RE.search(right)
+            if m:
+                num_start = end + m.start()
+                num_end   = end + m.end()
             else:
-                continue  # no number found near alias
+                # look left for number
+                left_start = max(0, pos - 20)
+                left = text[left_start:pos]
+                matches = list(_NUM_RE.finditer(left))
+                if matches:
+                    m = matches[-1]  # rightmost number before alias
+                    num_start = left_start + m.start()
+                    num_end   = left_start + m.end()
+                else:
+                    continue  # no number near this occurrence — try next
 
-        raw_num = text[num_start:num_end].replace(",", ".")
-        try:
-            values[field_name] = float(raw_num)
-        except ValueError:
-            continue
+            raw_num = text[num_start:num_end].replace(",", ".")
+            try:
+                values[field_name] = float(raw_num)
+            except ValueError:
+                continue
 
-        # mark positions as consumed
-        used.update(alias_range)
-        used.update(range(num_start, num_end))
+            # mark positions as consumed
+            used.update(alias_range)
+            used.update(range(num_start, num_end))
+            break  # field matched — stop scanning its occurrences
 
     # build leftover: chars not consumed, cleaned up
     leftover_chars = [c for i, c in enumerate(text) if i not in used]

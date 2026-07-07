@@ -4,6 +4,8 @@ from mycelium.utils.decay import cypher_effective_weight
 
 # ── Graph (full) ─────────────────────────────────────────
 
+# Bounded: keep the strongest $limit neurons (audit P8) — an unbounded
+# result set OOM'd the browser and the response on large graphs.
 GRAPH_NODES = f"""
 MATCH (e:Neuron)
 WITH e, {cypher_effective_weight("e")} AS ew
@@ -15,11 +17,16 @@ RETURN e.uuid          AS id,
        e.confirmations AS cnt,
        toString(e.freshness) AS freshness,
        ew
+ORDER BY ew DESC
+LIMIT $limit
 """
 
+# Only edges whose BOTH endpoints survived the node cap — otherwise the
+# viewer references node ids it never received.
 GRAPH_EDGES = """
 MATCH (a:Neuron)-[f:SYNAPSE]->(b:Neuron)
 WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
+  AND a.uuid IN $ids AND b.uuid IN $ids
 RETURN f.uuid       AS id,
        a.uuid       AS source,
        b.uuid       AS target,

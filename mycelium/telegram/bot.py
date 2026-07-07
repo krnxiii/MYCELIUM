@@ -550,9 +550,14 @@ async def _send_reply(message: Message, reply: ChannelReply) -> None:
     for chunk in _split_text(text, 4096):
         try:
             await message.answer(chunk, parse_mode=mode)
-        except Exception:
-            if mode:
-                await message.answer(strip_tags(chunk))
+        except Exception as exc:
+            # HTML send failed (usually a markup error) — retry as plain text.
+            # A silent drop here looked like the bot ignoring the user.
+            log.warning("send_reply_failed", mode=str(mode), error=str(exc))
+            try:
+                await message.answer(strip_tags(chunk) if mode else chunk)
+            except Exception as exc2:
+                log.error("send_reply_plain_failed", error=str(exc2))
 
 
 def _split_text(text: str, limit: int) -> list[str]:
