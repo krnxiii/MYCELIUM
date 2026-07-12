@@ -8,6 +8,8 @@ from typing  import Any
 
 from pydantic import BaseModel, Field
 
+from mycelium.utils.trust import neutralize
+
 # ── Knowledge loader (single source of truth) ─────────
 
 _KNOWLEDGE_DIR = Path(__file__).parent.parent / "knowledge"
@@ -256,12 +258,16 @@ def build_context_section(
         "\n## Graph Context (existing knowledge — avoid duplicates, use consistent naming)",
         f"Neurons: {neuron_count}, Active synapses: {synapse_count}",
     ]
+    # Names came out of previously ingested (untrusted) documents — break
+    # any harness-shaped tag so a poisoned name can't act as second-order
+    # injection when re-entering an extraction prompt as trusted context.
+    def _names(ns: list[dict[str, Any]]) -> str:
+        return ", ".join(f"{neutralize(n['name'])} ({n['type']})" for n in ns[:10])
+
     if top_neurons:
-        top = ", ".join(f"{n['name']} ({n['type']})" for n in top_neurons[:10])
-        lines.append(f"Top entities: {top}")
+        lines.append(f"Top entities: {_names(top_neurons)}")
     if recent_neurons:
-        rec = ", ".join(f"{n['name']} ({n['type']})" for n in recent_neurons[:10])
-        lines.append(f"Recent: {rec}")
+        lines.append(f"Recent: {_names(recent_neurons)}")
     return "\n".join(lines) + "\n"
 
 
@@ -395,7 +401,7 @@ def build_entity_prompt(
     focus = (f"\n## Extraction Focus\n{extraction_focus}\n"
              "Extract ONLY information relevant to this focus. Ignore everything else.\n"
              ) if extraction_focus else ""
-    return f"{system}{owner}{graph_context}{ctx}{ref}{focus}\n## Input Text\n{text}"
+    return f"{system}{owner}{graph_context}{ctx}{ref}{focus}\n{_fence(text)}"
 
 
 def build_relation_prompt(
@@ -498,7 +504,7 @@ Analyze this document and provide a concise structural overview:
 
 def build_survey_prompt(text: str) -> str:
     """Build survey prompt (Pass 1: document overview)."""
-    return f"{_SURVEY}\n\n<document>\n{text}\n</document>"
+    return f"{_SURVEY}\n\n{_fence(text)}"
 
 
 # ── Analytical Prompt (L3: Pass 3) ──────────────────────

@@ -184,6 +184,15 @@ system           set_owner / get_owner · save_extraction_skill / list_extractio
                  list_domains · get_domain · create_domain · update_domain · delete_domain
 ```
 
+### Untrusted-content trust boundary
+
+Graph text (neuron names, synapse facts, signal content) originates from ingested third-party documents and is **untrusted by definition**. Two enforcement points (`mycelium/utils/trust.py`):
+
+- **Read side** — `_TrustShield` FastMCP middleware neutralizes harness-shaped markup (fake `system-reminder`, tool-call/result wrappers, role tags) in *every* tool response by breaking the tag with an invisible zero-width space. Applied at the serialization boundary so all tools — present and future — are covered. Responses also surface `origin`/`source_type` provenance so readers can weigh trustworthiness.
+- **Write side** — all extraction prompts wrap raw document text in a nonce fence (`_fence`); graph-derived context that re-enters prompts (neuron names in graph context, L3 survey text) is neutralized against second-order injection.
+
+Scope limit: this stops *structural impersonation*, not persuasion — prose-only injection needs no markup. The reader harness's permission layer is the final boundary.
+
 ## Domain blueprints
 
 Adaptive knowledge domains let the user teach the system how to process specific types of input (medical records, finance, reading notes…). A blueprint is a YAML file in `~/.mycelium/domains/`:

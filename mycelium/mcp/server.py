@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import structlog
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from mycelium.config import Settings, load_settings
 from mycelium.core.models import SignalType
@@ -49,9 +50,35 @@ from mycelium.utils.decay import (
     cypher_effective_weight,
     effective_weight_from_data,
 )
+from mycelium.utils.trust import neutralize, neutralize_tree
 
 log = structlog.get_logger()
 mcp = FastMCP("mycelium")
+
+
+class _TrustShield(Middleware):
+    """Neutralize harness-impersonating markup in every tool response.
+
+    Graph fields (neuron names, synapse facts, signal content) hold
+    ingested third-party text; a stored fake ``<system-reminder>`` would
+    otherwise re-enter the reader agent's context with tool-result
+    authority (indirect prompt injection, OWASP LLM01). Applied at the
+    serialization boundary so every tool — present and future — is covered.
+    """
+
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Any,
+    ) -> Any:
+        result = await call_next(context)
+        for block in getattr(result, "content", None) or []:
+            if isinstance(getattr(block, "text", None), str):
+                block.text = neutralize(block.text)
+        if getattr(result, "structured_content", None) is not None:
+            result.structured_content = neutralize_tree(result.structured_content)
+        return result
+
+
+mcp.add_middleware(_TrustShield())
 
 # ── File-flag gate ────────────────────────────────────────────────
 
@@ -548,14 +575,16 @@ async def impl_search(
     return {
         "neurons": [
             {"uuid": sn.neuron.uuid, "name": sn.neuron.name,
-             "type": sn.neuron.neuron_type, "score": round(sn.score, 4)}
+             "type": sn.neuron.neuron_type, "origin": sn.neuron.origin,
+             "score": round(sn.score, 4)}
             for sn in res.neurons],
         "synapses": [
             {"uuid": ss.synapse.uuid, "fact": ss.synapse.fact,
              "source": ss.source_name, "target": ss.target_name,
-             "score": round(ss.score, 4)}
+             "origin": ss.synapse.origin, "score": round(ss.score, 4)}
             for ss in res.synapses],
-        "signals":     [{"uuid": s.uuid, "name": s.name} for s in res.signals],
+        "signals":     [{"uuid": s.uuid, "name": s.name,
+                         "source_type": s.source_type} for s in res.signals],
         "methods":     [m.value for m in res.methods],
         "duration_ms": ms,
     }
@@ -592,6 +621,7 @@ async def impl_get_neuron(uuid: str) -> dict[str, Any]:
         "expires_at":  str(e.get("expires_at",  "")) or None,
         "expired_at":  str(e.get("expired_at",  "")) or None,
         "weight": round(ew, 4), "attributes": e.get("attributes", "{}"),
+        "origin": e.get("origin", "raw"),
         "out_synapses": [f for f in r["out_synapses"] if f.get("uuid")],
         "in_synapses":  [f for f in r["in_synapses"] if f.get("uuid")],
         "signals":      [s for s in r["signals"] if s.get("uuid")],

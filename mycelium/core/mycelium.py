@@ -64,6 +64,7 @@ from mycelium.utils.decay import calc_decay_rate, consolidate, cypher_effective_
 from mycelium.core.skills import load_skills, match_skill
 from mycelium.core.telemetry import Telemetry
 from mycelium.utils.dedup import cosine_sim
+from mycelium.utils.trust import neutralize
 from mycelium.vault.storage import VaultStorage
 
 log = structlog.get_logger()
@@ -1452,7 +1453,10 @@ class Mycelium:
         try:
             text = await self._c.llm.generate_text(prompt, on_progress=llm_cb)
             log.info("survey_done", len=len(text))
-            return text
+            # Survey is derived from untrusted content and re-enters later
+            # extraction prompts as trusted "## Document Context" — break
+            # any harness-shaped tags it may have relayed.
+            return neutralize(text)
         except Exception as e:
             log.warning("survey_failed", error=str(e))
             return ""
