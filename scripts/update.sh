@@ -13,26 +13,12 @@ success() { printf "  ${GREEN}✓${NC}  %s\n" "$1"; }
 error()   { printf "  \033[0;31m✗${NC}  %s\n" "$1" >&2; }
 
 # ── Detect environment ──────────────────────────────────────────
-if [ -f docker-compose.vps.yml ] && docker compose -f docker-compose.vps.yml ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium; then
-    COMPOSE_FILE="docker-compose.vps.yml"
-else
-    COMPOSE_FILE="docker-compose.yml"
-fi
-
-PROFILES=()
-if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q telegram; then
-    PROFILES+=(--profile telegram)
-fi
-if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q whisper; then
-    PROFILES+=(--profile voice-whisper)
-fi
-if docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
-    PROFILES+=(--profile app)
-fi
+. "$(dirname "${BASH_SOURCE[0]}")/compose-env.sh"
+resolve_compose_env || exit 1
 
 COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE" "${PROFILES[@]}")
 
-printf "\n${BOLD}${GREEN}MYCELIUM${NC} update  ${DIM}[${COMPOSE_FILE}]${NC}\n"
+printf "\n${BOLD}${GREEN}MYCELIUM${NC} update  ${DIM}[${COMPOSE_FILE}${PROFILES[*]:+ ${PROFILES[*]}}]${NC}\n"
 
 # ── Pull ────────────────────────────────────────────────────────
 step "Pulling latest code"
