@@ -28,12 +28,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 # ── Detect compose file + container ─────────────────────────────
-if [ -f docker-compose.vps.yml ] && \
-   docker compose -f docker-compose.vps.yml ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
-    COMPOSE_FILE="docker-compose.vps.yml"
-elif docker compose -f docker-compose.yml ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
-    COMPOSE_FILE="docker-compose.yml"
-else
+. "$(dirname "${BASH_SOURCE[0]}")/compose-env.sh"
+resolve_compose_env || exit 1
+if ! docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
     warn "mycelium-app container not running — skipping migration."
     info "If you have no runtime-saved data, you can ignore this."
     exit 0
