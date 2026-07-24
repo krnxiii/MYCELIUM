@@ -137,25 +137,28 @@ class TendSettings(BaseModel):
 
 class RenderSettings(BaseModel):
     enabled:            bool = False
-    host:               str  = "0.0.0.0"
+    host:               str  = "127.0.0.1"  # loopback by default; Docker sets 0.0.0.0
     port:               int  = 9633
+    max_nodes:          int  = 2000  # cap /api/graph payload (audit P8)
 
 
 class MCPSettings(BaseModel):
     transport:          str  = "stdio"   # stdio | streamable-http
-    host:               str  = "0.0.0.0"
+    host:               str  = "127.0.0.1"  # loopback by default; Docker sets 0.0.0.0
     port:               int  = 9631
-    auth_token:         str  = ""        # empty = no auth (local); set for HTTP
+    auth_token:         str  = ""        # empty = no auth (local); required for non-loopback HTTP
 
 
 class TelegramSettings(BaseModel):
     bot_token:       str   = ""        # @BotFather token
     owner_chat_id:   int   = 0         # authorized user's chat_id
+    allow_all_users: bool  = False     # explicit opt-in to accept ALL users (insecure)
     mcp_url:         str   = "http://localhost:9631/mcp"
     mcp_auth_token:  str   = ""        # Bearer token for MCP HTTP (fallback: mcp.auth_token)
     debounce_sec:    float = 1.5       # text debounce window
     rate_limit:      int   = 30        # max messages per minute
     session_ttl:     int   = 14400    # agent session TTL in seconds (4h)
+    agent_timeout:   float = 600.0    # wall-clock limit per agent run (seconds)
     # Voice STT
     stt_provider:    str   = "none"    # whisper-local | deepgram | none
     stt_api_key:     str   = ""        # Deepgram API key

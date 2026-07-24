@@ -32,6 +32,7 @@ class SignalStatus(StrEnum):
     pending    = "pending"
     extracting = "extracting"
     saved      = "saved"
+    partial    = "partial"   # some chunks extracted, ≥1 failed (audit M25)
     failed     = "failed"
 
 

@@ -940,7 +940,7 @@ function renderLegend() {
       if (t && !seen.has(t)) seen.set(t, THEME.node.types[t] || INFERRED_COLORS._default);
     });
     for (const [type, color] of seen) {
-      html += `<div class="leg-item"><span class="leg-ring" style="background:${color}"></span><span class="leg-label">${type}</span></div>`;
+      html += `<div class="leg-item"><span class="leg-ring" style="background:${color}"></span><span class="leg-label">${esc(type)}</span></div>`;
     }
   } else if (activeLayer === 'decay') {
     for (const [c, l] of [[THEME.decay.fresh,'Fresh'],[THEME.decay.aging,'Aging'],[THEME.decay.stale,'Stale']]) {

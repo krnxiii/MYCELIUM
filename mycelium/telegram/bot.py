@@ -51,6 +51,10 @@ _BATCH_DELAY = 1.5  # seconds to wait for more items
 _batch_parts:  dict[int, list[str]] = {}                          # chat_id → text parts
 _batch_timers: dict[int, asyncio.TimerHandle] = {}                # chat_id → scheduled flush
 _batch_refs:   dict[int, tuple[Message, "Dispatcher"]] = {}       # chat_id → (last_msg, dispatcher)
+_batch_tasks:  set[asyncio.Task] = set()               # strong refs (GC guard)
+
+# Set in run_bot(); the batch flush serializes through its per-chat lock.
+_seq: SequentialMiddleware | None = None
 
 
 def _batch_add(chat_id: int, text: str, message: Message, dispatcher: "Dispatcher") -> None:
@@ -61,13 +65,22 @@ def _batch_add(chat_id: int, text: str, message: Message, dispatcher: "Dispatche
     if timer is not None:
         timer.cancel()
     loop = asyncio.get_event_loop()
-    _batch_timers[chat_id] = loop.call_later(
-        _BATCH_DELAY, lambda cid=chat_id: asyncio.create_task(_flush_batch(cid)),
-    )
+
+    def _spawn(cid: int = chat_id) -> None:
+        task = asyncio.create_task(_flush_batch(cid))
+        _batch_tasks.add(task)
+        task.add_done_callback(_batch_tasks.discard)
+
+    _batch_timers[chat_id] = loop.call_later(_BATCH_DELAY, _spawn)
 
 
 async def _flush_batch(chat_id: int) -> None:
-    """Flush batched items for a chat as one agent request."""
+    """Flush batched items for a chat as one agent request.
+
+    Serializes through the SequentialMiddleware per-chat lock: this is an
+    out-of-band agent entry point, and running it concurrently with a
+    handler-driven agent run cross-wires the two subprocesses (audit C5).
+    """
     _batch_timers.pop(chat_id, None)
     parts = _batch_parts.pop(chat_id, [])
     ref   = _batch_refs.pop(chat_id, None)
@@ -77,11 +90,15 @@ async def _flush_batch(chat_id: int) -> None:
     combined = "\n\n---\n\n".join(parts)
     log.info("batch.flush", chat_id=chat_id, count=len(parts), total_len=len(combined))
     try:
-        await _stream_dispatch(message, dispatcher, combined)
+        if _seq is not None:
+            async with _seq.chat_lock(chat_id):
+                await _stream_dispatch(message, dispatcher, combined)
+        else:
+            await _stream_dispatch(message, dispatcher, combined)
     except Exception as exc:
         log.error("batch.flush_error", chat_id=chat_id, error=str(exc))
         with contextlib.suppress(Exception):
-            await message.answer(f"Error processing batch: {exc}")
+            await message.answer("Error processing batch. Please try again.")
 
 
 # ── Handlers ────────────────────────────────────────────────────────
@@ -118,9 +135,25 @@ async def cmd_commands(message: Message) -> None:
 
 @router.message(Command("abort"))
 async def cmd_abort(message: Message, dispatcher: Dispatcher) -> None:
-    """Priority lane: kill current agent subprocess."""
-    if dispatcher.abort():
-        await message.answer("Aborted.")
+    """Control lane (bypasses SequentialMiddleware buffering): kill this
+    chat's agent subprocess and drop everything queued behind it."""
+    chat_id = message.chat.id
+    killed  = dispatcher.abort(str(chat_id))
+
+    # Drop pending work too — an abort that lets the queue immediately
+    # re-trigger the agent aborts nothing from the user's point of view.
+    dropped = _seq.clear(chat_id) if _seq is not None else 0
+    timer   = _batch_timers.pop(chat_id, None)
+    if timer is not None:
+        timer.cancel()
+    dropped += len(_batch_parts.pop(chat_id, []))
+    _batch_refs.pop(chat_id, None)
+
+    if killed:
+        extra = f" Dropped {dropped} queued message(s)." if dropped else ""
+        await message.answer(f"Aborted.{extra}")
+    elif dropped:
+        await message.answer(f"Nothing running. Dropped {dropped} queued message(s).")
     else:
         await message.answer("Nothing to abort.")
 
@@ -296,6 +329,10 @@ async def handle_voice(
         )
         return
 
+    if message.voice.file_size and message.voice.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("Voice message too large (max 20 MB).")
+        return
+
     async with TypingKeepAlive(message):
         # Download voice file
         file = await message.bot.get_file(message.voice.file_id)
@@ -410,6 +447,9 @@ async def _save_photo(message: Message) -> Path | None:
     if not message.bot or not message.photo:
         return None
     photo = message.photo[-1]
+    if photo.file_size and photo.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None
     file  = await message.bot.get_file(photo.file_id)
     if not file.file_path:
         await message.reply("Failed to get photo.")
@@ -438,6 +478,9 @@ async def _save_document(message: Message) -> tuple[Path | None, str]:
     if not message.bot or not message.document:
         return None, ""
     doc  = message.document
+    if doc.file_size and doc.file_size > _MAX_UPLOAD_BYTES:
+        await message.reply("File too large (max 20 MB).")
+        return None, ""
     file = await message.bot.get_file(doc.file_id)
     if not file.file_path:
         await message.reply("Failed to get document.")
@@ -507,9 +550,14 @@ async def _send_reply(message: Message, reply: ChannelReply) -> None:
     for chunk in _split_text(text, 4096):
         try:
             await message.answer(chunk, parse_mode=mode)
-        except Exception:
-            if mode:
-                await message.answer(strip_tags(chunk))
+        except Exception as exc:
+            # HTML send failed (usually a markup error) — retry as plain text.
+            # A silent drop here looked like the bot ignoring the user.
+            log.warning("send_reply_failed", mode=str(mode), error=str(exc))
+            try:
+                await message.answer(strip_tags(chunk) if mode else chunk)
+            except Exception as exc2:
+                log.error("send_reply_plain_failed", error=str(exc2))
 
 
 def _split_text(text: str, limit: int) -> list[str]:
@@ -580,6 +628,16 @@ async def run_bot() -> None:
         log.error("telegram.no_token", hint="Set MYCELIUM_TELEGRAM__BOT_TOKEN")
         raise SystemExit(1)
 
+    # Fail-closed: refuse to start an unowned bot unless open mode is explicit.
+    if tg.owner_chat_id == 0 and not tg.allow_all_users:
+        log.error(
+            "telegram.no_owner",
+            hint="Set MYCELIUM_TELEGRAM__OWNER_CHAT_ID "
+                 "(or MYCELIUM_TELEGRAM__ALLOW_ALL_USERS=true to accept everyone "
+                 "— insecure, exposes your graph to all of Telegram)",
+        )
+        raise SystemExit(1)
+
     # MCP auth: use telegram-specific token, fallback to MCP server token
     mcp_token = tg.mcp_auth_token or cfg.mcp.auth_token
 
@@ -607,7 +665,8 @@ async def run_bot() -> None:
         raise SystemExit(1) from exc
 
     # Agent for full mode (claude -p subprocess)
-    agent = AgentProcess(model=cfg.llm.model, session_ttl=tg.session_ttl)
+    agent = AgentProcess(model=cfg.llm.model, session_ttl=tg.session_ttl,
+                         timeout=tg.agent_timeout)
 
     dispatcher = Dispatcher(mcp_client, agent)
 
@@ -626,10 +685,14 @@ async def run_bot() -> None:
     if stt:
         dp["stt"] = stt
 
-    # Middleware stack (order matters: first registered = outermost)
+    # Middleware stack (order matters: first registered = outermost).
+    # Auth is outermost so unauthorized chats are rejected before the rate
+    # limiter allocates per-chat state for them (bounds _timestamps growth).
+    global _seq
+    _seq = SequentialMiddleware()
+    router.message.middleware(AuthMiddleware(tg.owner_chat_id, tg.allow_all_users))
     router.message.middleware(RateLimitMiddleware(tg.rate_limit))
-    router.message.middleware(AuthMiddleware(tg.owner_chat_id))
-    router.message.middleware(SequentialMiddleware())
+    router.message.middleware(_seq)
     router.message.middleware(ACKMiddleware())
 
     dp.include_router(router)

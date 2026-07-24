@@ -32,6 +32,8 @@ expired_at ─ when it was soft-deleted (NULL = active)
 
 This separates **what reality says** (valid/invalid) from **what we know** (created/expired). Old facts can be invalidated without being deleted — useful for contradiction handling and audit.
 
+Invariant: contradiction SUPERSEDE sets `invalid_at` (+ `superseded_by` → the replacing fact) and the record **survives** `tend prune`. `expired_at` is reserved for genuine tombstones (`delete_synapse`, past-TTL) — those `prune` physically deletes. Current-fact readers (search, dedup, render, sleep) filter both: `expired_at IS NULL AND invalid_at IS NULL`; timeline and provenance queries keep invalidated records visible.
+
 Neurons are simpler: only `created_at`, `expires_at`, and a `freshness` timestamp that drives decay (see below). No bi-temporal model on entities — only on facts.
 
 ## Decay + consolidation
@@ -181,6 +183,15 @@ portability      export_subgraph · import_subgraph
 system           set_owner / get_owner · save_extraction_skill / list_extraction_skills
                  list_domains · get_domain · create_domain · update_domain · delete_domain
 ```
+
+### Untrusted-content trust boundary
+
+Graph text (neuron names, synapse facts, signal content) originates from ingested third-party documents and is **untrusted by definition**. Two enforcement points (`mycelium/utils/trust.py`):
+
+- **Read side** — `_TrustShield` FastMCP middleware neutralizes harness-shaped markup (fake `system-reminder`, tool-call/result wrappers, role tags) in *every* tool response by breaking the tag with an invisible zero-width space. Applied at the serialization boundary so all tools — present and future — are covered. Responses also surface `origin`/`source_type` provenance so readers can weigh trustworthiness.
+- **Write side** — all extraction prompts wrap raw document text in a nonce fence (`_fence`); graph-derived context that re-enters prompts (neuron names in graph context, L3 survey text) is neutralized against second-order injection.
+
+Scope limit: this stops *structural impersonation*, not persuasion — prose-only injection needs no markup. The reader harness's permission layer is the final boundary.
 
 ## Domain blueprints
 

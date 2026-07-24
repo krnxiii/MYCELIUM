@@ -259,6 +259,7 @@ def serve(
         await drv.__aenter__()
         try:
             await drv.build_indices()
+            await drv.verify_vector_dims(settings.semantic.dimensions)
         finally:
             await drv.close()
     try:
@@ -268,16 +269,33 @@ def serve(
         raise typer.Exit(1) from exc
 
     try:
+        from mycelium.mcp.server import _normalize_gates
         from mycelium.mcp.server import mcp as mcp_server
     except ImportError as exc:
         typer.echo("fastmcp not installed. pip install mycelium[mcp]", err=True)
         raise typer.Exit(1) from exc
+    # Enforce documented gate default (read=ON, write=OFF) at server start,
+    # not import time — a blessed HTTP deployment re-enables write (audit M15).
+    _normalize_gates(transport=transport, authed=bool(auth_token))
     # Bearer token auth for HTTP transport
     if transport != "stdio":
         if not auth_token:
+            is_loopback   = host in ("127.0.0.1", "localhost", "::1")
+            allow_no_auth = os.environ.get(
+                "MYCELIUM_MCP__ALLOW_NO_AUTH", "",
+            ).lower() in ("1", "true", "yes")
+            if not (is_loopback or allow_no_auth):
+                # Fail-closed: HTTP on a non-loopback address with no token would
+                # expose every read/write tool to the network. Refuse to start.
+                typer.echo(
+                    f"FATAL: MCP HTTP on {host} requires MYCELIUM_MCP__AUTH_TOKEN. "
+                    "Set it in .env, bind to 127.0.0.1, or set "
+                    "MYCELIUM_MCP__ALLOW_NO_AUTH=true to override (insecure).",
+                    err=True,
+                )
+                raise typer.Exit(1)
             typer.echo(
-                "WARNING: MCP server running on HTTP without auth token. "
-                "Set MYCELIUM_MCP__AUTH_TOKEN in .env",
+                f"WARNING: MCP HTTP on {host} running without auth token.",
                 err=True,
             )
         else:
@@ -288,26 +306,45 @@ def serve(
     # Auto-start render server if enabled
     if settings.render.enabled:
         try:
-            import signal
             import uvicorn as _uvi
             from mycelium.render.server import app as _render_app
             _rh, _rp = settings.render.host, settings.render.port
             _old = _render_alive()
             if _old:
                 _render_stop()
-            signal.signal(signal.SIGCHLD, signal.SIG_IGN)  # auto-reap child
+            # Daemonize via double-fork so the render server reparents to init
+            # (pid 1 reaps it). The old code set SIGCHLD→SIG_IGN in THIS process
+            # to auto-reap the single-fork child — but that also made the kernel
+            # auto-reap every `claude` CLI subprocess, so asyncio's watcher read
+            # rc=255 for all of them and real exit codes (incl. session expiry)
+            # were lost (audit M17).
             child = os.fork()
             if child:
-                _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
-                _RENDER_PID.write_text(str(child))
-                typer.echo(f"Graph viewer → http://localhost:{_rp}")
+                # MCP parent: reap the short-lived intermediate; after it exits
+                # the pid file is already written, so no read race.
+                os.waitpid(child, 0)
+                if _render_alive():
+                    typer.echo(f"Graph viewer → http://localhost:{_rp}")
             else:
+                # Intermediate child: detach, fork the real server, record its
+                # pid, then exit so the grandchild is orphaned onto init.
                 os.setsid()
+                grandchild = os.fork()
+                if grandchild:
+                    _RENDER_PID.parent.mkdir(parents=True, exist_ok=True)
+                    _RENDER_PID.write_text(str(grandchild))
+                    os._exit(0)
+                # Grandchild: the actual uvicorn render server.
                 devnull = open(os.devnull, "w")  # noqa: SIM115
                 os.dup2(devnull.fileno(), 1)
                 os.dup2(devnull.fileno(), 2)
                 devnull.close()
-                _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
+                try:
+                    _uvi.run(_render_app, host=_rh, port=_rp, log_level="error")
+                finally:
+                    # Never unwind back into the parent's code path from a fork
+                    # child — skip atexit/finally that would double-run (M17).
+                    os._exit(0)
         except ImportError:
             typer.echo("Render enabled but deps missing — skipping", err=True)
 
@@ -363,6 +400,10 @@ def telegram() -> None:
     except ImportError as exc:
         typer.echo("aiogram not installed. pip install mycelium[telegram]", err=True)
         raise typer.Exit(1) from exc
+    # Periodic glibc heap trim — the bot container ingests/extracts in bursts
+    # and kept the #42 RSS growth without this (audit P8).
+    from mycelium.utils.memory import start_periodic_trim
+    start_periodic_trim()
     _run(run_bot())
 
 
@@ -905,10 +946,14 @@ def load(
         result = subprocess.run(
             ["docker", "run", "--rm",
              "-v", f"{Path.home()}/.mycelium/neo4j/data:/data",
-             "-v", f"{path.resolve()}:/dump/{path.name}",
+             # `neo4j-admin database load neo4j --from-path=/dump` resolves the
+             # archive as /dump/neo4j.dump — mount the source there regardless
+             # of its on-disk name, else the advertised backup never restores
+             # (audit M20).
+             "-v", f"{path.resolve()}:/dump/neo4j.dump",
              "neo4j:5.26-community",
              "neo4j-admin", "database", "load", "neo4j",
-             f"--from-path=/dump",
+             "--from-path=/dump",
              "--overwrite-destination=true"],
             capture_output=True, timeout=300,
         )
@@ -1134,14 +1179,35 @@ def update() -> None:
 
     # 1. fetch + pull main
     typer.echo("Pulling latest code...")
-    subprocess.run(["git", "fetch", "origin"], capture_output=True)
+    subprocess.run(["git", "fetch", "origin"], capture_output=True, timeout=120)
+
+    # A dirty tree makes `git checkout main` fail; the old code ignored that
+    # rc and then `git pull origin main` merged main INTO the current branch
+    # (e.g. dev). Refuse up front (audit M19).
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=30,
+    ).stdout.strip()
+    if dirty:
+        typer.echo(
+            "Working tree has uncommitted changes — commit or stash before "
+            "updating.", err=True,
+        )
+        raise typer.Exit(1)
+
     current = subprocess.run(
-        ["git", "branch", "--show-current"], capture_output=True, text=True,
+        ["git", "branch", "--show-current"], capture_output=True, text=True, timeout=30,
     ).stdout.strip()
     if current != "main":
         typer.echo(f"Switching from {current} to main...")
-        subprocess.run(["git", "checkout", "main"], capture_output=True)
-    r = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
+        co = subprocess.run(
+            ["git", "checkout", "main"], capture_output=True, text=True, timeout=30,
+        )
+        if co.returncode != 0:
+            typer.echo(f"git checkout main failed: {co.stderr.strip()}", err=True)
+            raise typer.Exit(1)
+    r = subprocess.run(
+        ["git", "pull", "origin", "main"], capture_output=True, text=True, timeout=120,
+    )
     typer.echo(r.stdout.strip() or r.stderr.strip())
     if r.returncode != 0:
         typer.echo("git pull failed.", err=True)

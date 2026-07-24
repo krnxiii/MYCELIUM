@@ -4,9 +4,11 @@ services:
   neo4j:
     image: neo4j:5.26-community
     container_name: mycelium-neo4j
+    # Published ports bind to loopback by default. Set MYCELIUM_BIND_ADDR to a
+    # specific interface (e.g. a Tailscale IP) to expose them only there.
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "${MYCELIUM_BIND_ADDR:-127.0.0.1}:7474:7474"
+      - "${MYCELIUM_BIND_ADDR:-127.0.0.1}:7687:7687"
     environment:
       NEO4J_AUTH: ${MYCELIUM_NEO4J__USER:-neo4j}/${MYCELIUM_NEO4J__PASSWORD:-password}
       NEO4J_PLUGINS: '["apoc"]'
@@ -14,7 +16,6 @@ services:
       NEO4J_server_memory_heap_max__size: "512m"
       NEO4J_server_memory_pagecache_size: "256m"
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_dbms_security_auth__minimum__password__length: "1"
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/data:/data
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/neo4j/logs:/logs
@@ -31,7 +32,7 @@ services:
     container_name: mycelium-embeddings
     command: --model-id BAAI/bge-m3 --port 9632
     ports:
-      - "9632:9632"
+      - "${MYCELIUM_BIND_ADDR:-127.0.0.1}:9632:9632"
     volumes:
       - ${MYCELIUM_DATA_DIR:-~/.mycelium}/models/embeddings:/data
     profiles:
@@ -47,10 +48,13 @@ services:
     build: .
     container_name: mycelium-app
     ports:
-      - "9631:9631"
+      - "${MYCELIUM_BIND_ADDR:-127.0.0.1}:9631:9631"
     environment:
       MYCELIUM_NEO4J__URI: bolt://neo4j:7687
       MYCELIUM_NEO4J__PASSWORD: ${MYCELIUM_NEO4J__PASSWORD:-password}
+      # Local dev: MCP HTTP runs without a bearer token. Explicit opt-in keeps
+      # the server's fail-closed check happy; it is published on loopback only.
+      MYCELIUM_MCP__ALLOW_NO_AUTH: "true"
       MYCELIUM_SEMANTIC__PROVIDER: api
       MYCELIUM_SEMANTIC__API_BASE_URL: ${MYCELIUM_SEMANTIC__API_BASE_URL:-https://api.deepinfra.com/v1/openai}
       MYCELIUM_SEMANTIC__API_KEY: ${MYCELIUM_SEMANTIC__API_KEY:-}

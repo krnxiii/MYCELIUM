@@ -82,7 +82,7 @@ def make_embedder(settings: SemanticSettings) -> EmbedderClient:
         if not settings.api_key:
             from mycelium.exceptions import EmbeddingError
             raise EmbeddingError(
-                "provider='api' requires api_key — set SEMANTIC__API_KEY "
+                "provider='api' requires api_key — set MYCELIUM_SEMANTIC__API_KEY "
                 "or switch provider to 'local' / 'mock'",
             )
         from mycelium.embedder.api import APIEmbedder

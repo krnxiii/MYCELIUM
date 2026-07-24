@@ -105,7 +105,7 @@ async def _find_weak_neurons(
         "  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
         f"WITH e, {ew} AS ew "
         "WHERE ew < $threshold "
-        "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL "
+        "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL AND f.invalid_at IS NULL "
         "WITH e, ew, count(f) AS syn_count "
         "RETURN e.uuid AS uuid, e.name AS name, "
         "  e.neuron_type AS type, e.summary AS summary, "
@@ -124,7 +124,7 @@ async def _find_isolated_neurons(
     return await drv.execute_query(
         "MATCH (e:Neuron) WHERE e.expired_at IS NULL "
         "  AND (e.expires_at IS NULL OR e.expires_at > datetime()) "
-        "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL "
+        "OPTIONAL MATCH (e)-[f:SYNAPSE]-() WHERE f.expired_at IS NULL AND f.invalid_at IS NULL "
         "WITH e, count(f) AS syn_count "
         "WHERE syn_count <= $max_syn "
         f"WITH e, syn_count, {ew} AS ew "
@@ -177,7 +177,7 @@ async def _graph_stats(drv: Neo4jDriver) -> dict[str, Any]:
     rows = await drv.execute_query(
         "MATCH (n:Neuron) WHERE n.expired_at IS NULL "
         "WITH count(n) AS neurons "
-        "OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL "
+        "OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL AND f.invalid_at IS NULL "
         "WITH neurons, count(f) AS synapses "
         "OPTIONAL MATCH ()-[fe:SYNAPSE]->() WHERE fe.expired_at IS NOT NULL "
         "RETURN neurons, synapses, count(fe) AS expired"
@@ -213,9 +213,9 @@ async def _find_conflicts(drv: Neo4jDriver) -> list[dict[str, Any]]:
     rows = await drv.execute_query(
         "MATCH (s:Neuron)-[new:SYNAPSE]->(t:Neuron) "
         "WHERE new.contradiction_of IS NOT NULL "
-        "  AND new.expired_at IS NULL "
+        "  AND new.expired_at IS NULL AND new.invalid_at IS NULL "
         "MATCH ()-[old:SYNAPSE {uuid: new.contradiction_of}]->() "
-        "WHERE old.expired_at IS NULL "
+        "WHERE old.expired_at IS NULL AND old.invalid_at IS NULL "
         "RETURN s.name AS source, t.name AS target, "
         "  new.fact AS new_fact, old.fact AS old_fact, "
         "  new.uuid AS new_uuid, old.uuid AS old_uuid "

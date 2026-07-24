@@ -4,6 +4,8 @@ from mycelium.utils.decay import cypher_effective_weight
 
 # ── Graph (full) ─────────────────────────────────────────
 
+# Bounded: keep the strongest $limit neurons (audit P8) — an unbounded
+# result set OOM'd the browser and the response on large graphs.
 GRAPH_NODES = f"""
 MATCH (e:Neuron)
 WITH e, {cypher_effective_weight("e")} AS ew
@@ -15,11 +17,16 @@ RETURN e.uuid          AS id,
        e.confirmations AS cnt,
        toString(e.freshness) AS freshness,
        ew
+ORDER BY ew DESC
+LIMIT $limit
 """
 
+# Only edges whose BOTH endpoints survived the node cap — otherwise the
+# viewer references node ids it never received.
 GRAPH_EDGES = """
 MATCH (a:Neuron)-[f:SYNAPSE]->(b:Neuron)
-WHERE f.expired_at IS NULL
+WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
+  AND a.uuid IN $ids AND b.uuid IN $ids
 RETURN f.uuid       AS id,
        a.uuid       AS source,
        b.uuid       AS target,
@@ -30,7 +37,7 @@ RETURN f.uuid       AS id,
 
 GRAPH_STATS = """
 OPTIONAL MATCH (e:Neuron) WITH count(e) AS neurons
-OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL
+OPTIONAL MATCH ()-[f:SYNAPSE]->() WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN neurons, count(f) AS synapses
 """
 
@@ -38,7 +45,7 @@ RETURN neurons, count(f) AS synapses
 
 NEURON_SYNAPSES = """
 MATCH (e:Neuron {uuid: $uuid})-[f:SYNAPSE]-(other:Neuron)
-WHERE f.expired_at IS NULL
+WHERE f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN f.fact        AS fact,
        f.relation    AS relation,
        f.confidence  AS conf,
@@ -80,7 +87,7 @@ MATCH (c:Neuron {uuid: $uuid})-[:SYNAPSE*1..2]-(n:Neuron)
 WITH collect(DISTINCT n.uuid) + [$uuid] AS scope
 MATCH (a:Neuron)-[f:SYNAPSE]->(b:Neuron)
 WHERE a.uuid IN scope AND b.uuid IN scope
-  AND f.expired_at IS NULL
+  AND f.expired_at IS NULL AND f.invalid_at IS NULL
 RETURN f.uuid       AS id,
        a.uuid       AS source,
        b.uuid       AS target,

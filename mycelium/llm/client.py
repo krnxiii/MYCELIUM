@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from mycelium.config import LLMSettings
-from mycelium.exceptions import ExtractionError
+from mycelium.exceptions import ExtractionError, TransientLLMError
 from mycelium.llm.base import LLMBackend, LLMProgressFn, parse_json
 from mycelium.llm.session import LLMSession, SessionExpiredError
 
@@ -31,8 +31,7 @@ class LLMClient(LLMBackend):
         self,
         settings: LLMSettings | None = None,
     ) -> None:
-        self._s     = settings or LLMSettings()
-        self._last_session_id: str | None = None
+        self._s = settings or LLMSettings()
 
     @property
     def model(self) -> str:
@@ -100,7 +99,7 @@ class LLMClient(LLMBackend):
             )
 
             try:
-                raw = await self._call_streaming(
+                raw, sid = await self._call_streaming(
                     cmd, actual_prompt, on_progress=on_progress,
                 )
             except SessionExpiredError:
@@ -117,8 +116,14 @@ class LLMClient(LLMBackend):
                 raise ExtractionError(
                     f"CC CLI inactivity timeout ({self._s.timeout:.0f}s no data)",
                 )
+            except TransientLLMError as e:
+                # Rate-limit / overload / 5xx — the retry+backoff loop exists
+                # precisely for these (audit M22). Previously every is_error
+                # raised ExtractionError and was re-raised as permanent.
+                last_err = e
+                log.warning("cc_cli_transient", attempt=attempt + 1, error=str(e))
             except ExtractionError:
-                raise                          # permanent (CLI not found)
+                raise                          # permanent (CLI not found, auth)
             except Exception as e:
                 last_err = ExtractionError(f"CC CLI error: {e}")
                 log.warning("cc_cli_error", attempt=attempt + 1, error=str(e))
@@ -130,12 +135,12 @@ class LLMClient(LLMBackend):
                     session.invalidate()
                     continue
 
-                # Success — update session state
+                # Success — update session state with THIS call's session id
+                # (M21: was a shared instance field, raced under parallel
+                # per-chunk extraction and resumed the wrong CLI session).
                 if session:
                     if not session.is_initialized:
-                        session.mark_initialized(
-                            self._last_session_id or "",
-                        )
+                        session.mark_initialized(sid or "")
                     else:
                         session.record_call()
 
@@ -154,7 +159,7 @@ class LLMClient(LLMBackend):
         prompt:      str,
         *,
         on_progress: LLMProgressFn = None,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Stream CC CLI subprocess via NDJSON events.
 
         Reads ``--output-format stream-json`` line by line, parsing events:
@@ -162,9 +167,9 @@ class LLMClient(LLMBackend):
         Inactivity timeout kills the process if no event arrives for
         ``self._s.timeout`` seconds.
 
-        Side effect: sets ``self._last_session_id`` from system event.
+        Returns ``(result_text, session_id)`` — the session id is captured
+        per-call (M21), never stored on the instance.
         """
-        self._last_session_id = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -178,15 +183,9 @@ class LLMClient(LLMBackend):
                 "claude CLI not found. Install Claude Code.",
             ) from None
 
-        # Send prompt, close stdin
-        assert proc.stdin is not None
-        proc.stdin.write(prompt.encode())
-        await proc.stdin.drain()
-        proc.stdin.close()
-
-        # Drain stderr in background (prevent pipe buffer deadlock)
         stderr_buf    = bytearray()
         stderr_drain  = 5.0  # cap wait for stderr after proc exits
+        state: dict[str, Any] = {"sid": None}
 
         async def _drain_stderr() -> None:
             assert proc.stderr is not None
@@ -207,13 +206,30 @@ class LLMClient(LLMBackend):
             except (asyncio.CancelledError, TimeoutError):
                 pass
 
-        # Stream NDJSON events with inactivity timeout
+        async def _kill() -> None:
+            """Tear the subprocess down; safe to call on any exit path."""
+            if proc.returncode is None:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=stderr_drain)
+                except TimeoutError:
+                    pass
+            await _finish_stderr()
+
         result_text   = ""
         inactivity_to = self._s.timeout
         tick_interval = 5.0
+        assert proc.stdin is not None
         assert proc.stdout is not None
 
         try:
+            # stdin write/drain is bounded and inside the try (M23): a wedged
+            # CLI or a prompt larger than the pipe buffer would otherwise block
+            # drain() forever — the inactivity timeout only guarded stdout.
+            proc.stdin.write(prompt.encode())
+            await asyncio.wait_for(proc.stdin.drain(), timeout=inactivity_to)
+            proc.stdin.close()
+
             idle_since = time.monotonic()
             while True:
                 try:
@@ -224,9 +240,6 @@ class LLMClient(LLMBackend):
                 except TimeoutError:
                     elapsed_idle = time.monotonic() - idle_since
                     if elapsed_idle >= inactivity_to:
-                        proc.kill()
-                        await proc.wait()
-                        await _finish_stderr()
                         raise
                     if on_progress:
                         on_progress(f"waiting… ({elapsed_idle:.0f}s)")
@@ -237,16 +250,15 @@ class LLMClient(LLMBackend):
 
                 idle_since = time.monotonic()
                 text = self._handle_stream_event(
-                    line, on_progress=on_progress,
+                    line, state=state, on_progress=on_progress,
                 )
                 if text is not None:
                     result_text = text
-        except TimeoutError:
-            raise
-        except Exception:
-            proc.kill()
-            await proc.wait()
-            await _finish_stderr()
+        except BaseException:
+            # Any exit — timeout, parse/result error, or CancelledError —
+            # must reap the subprocess (M24). A bare `except Exception`
+            # leaked the CLI on cancellation, burning quota.
+            await _kill()
             raise
 
         # Wait for process exit + stderr drain (bounded)
@@ -261,6 +273,7 @@ class LLMClient(LLMBackend):
             except asyncio.CancelledError:
                 pass
 
+        sid = state["sid"]
         if proc.returncode != 0:
             stderr_text = stderr_buf.decode(errors="replace").strip()
             if _is_session_error(stderr_text):
@@ -274,12 +287,17 @@ class LLMClient(LLMBackend):
                             rc=proc.returncode,
                             result_len=len(result_text),
                             stderr=stderr_text[:200])
-                return result_text
+                return result_text, sid
+            # A non-zero rc with transient stderr is retryable (M22).
+            if _is_transient_error(stderr_text):
+                raise TransientLLMError(
+                    f"claude CLI rc={proc.returncode}: {stderr_text[:300]}",
+                )
             raise RuntimeError(
                 f"claude CLI rc={proc.returncode}: {stderr_text}",
             )
 
-        return result_text
+        return result_text, sid
 
     # ── NDJSON event dispatcher ──────────────────────────
 
@@ -287,10 +305,12 @@ class LLMClient(LLMBackend):
         self,
         line:        bytes,
         *,
+        state:       dict[str, Any],
         on_progress: LLMProgressFn = None,
     ) -> str | None:
         """Parse one NDJSON event, log it, fire progress.
 
+        Captures the session id into ``state['sid']`` (per-call, M21).
         Returns result text if present, else None.
         """
         raw = line.decode(errors="replace").strip()
@@ -309,7 +329,7 @@ class LLMClient(LLMBackend):
         if etype == "system":
             sid = ev.get("session_id") or ev.get("sessionId", "")
             if sid:
-                self._last_session_id = sid
+                state["sid"] = sid
             log.debug("cc_stream_init",
                       subtype=ev.get("subtype"),
                       model=ev.get("model"),
@@ -352,6 +372,10 @@ class LLMClient(LLMBackend):
             if ev.get("is_error"):
                 err = ev.get("result", "unknown CLI error")
                 log.error("cc_stream_error", error=err[:300])
+                # Classify (M22): rate-limit / overload / 5xx are transient and
+                # belong to the retry loop; everything else is permanent.
+                if _is_transient_error(err):
+                    raise TransientLLMError(f"CC CLI: {err[:500]}")
                 raise ExtractionError(f"CC CLI: {err[:500]}")
 
             usage = ev.get("usage", {})
@@ -387,4 +411,20 @@ def _is_session_error(stderr: str) -> bool:
     return any(kw in lower for kw in (
         "session not found", "session expired", "invalid session",
         "could not resume", "no such session",
+    ))
+
+
+def _is_transient_error(text: str) -> bool:
+    """Detect recoverable CLI errors worth a backoff retry (audit M22).
+
+    Rate limits, overload, and 5xx/network blips clear on their own; auth
+    failures, bad requests, and CLI-not-found do not.
+    """
+    lower = text.lower()
+    return any(kw in lower for kw in (
+        "rate limit", "rate_limit", "ratelimit", "429",
+        "overloaded", "overload", "529",
+        "500", "502", "503", "504",
+        "timeout", "timed out", "temporarily", "try again",
+        "connection reset", "connection error", "network",
     ))

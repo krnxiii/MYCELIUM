@@ -31,6 +31,7 @@ Roadmap, design drafts, reviews. Not user-facing — gitignored deliberately. If
 | File | Purpose |
 |------|----------|
 | `BACKLOG.txt` | Master roadmap with priorities and statuses. Updated when work ships. |
+| `AUDIT_2026-07-06.md` | Deep architectural audit: verified findings (critical/major/minor) + phased fix plan. |
 | `DESIGN_DISTRIBUTED_ARCHITECTURE.txt` | VPS, Telegram, Tailscale, Syncthing design notes. |
 | `DESIGN_METRIC_TRACKING.txt` | Metric tracking (time-series alongside the graph). |
 | `DESIGN_TELEGRAM_UX.txt` | Telegram UX: rich input, voice, photo, forwards, autonomous reports. |

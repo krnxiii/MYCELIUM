@@ -21,25 +21,37 @@ Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 # ── Auth: verify chat_id matches owner ──────────────────────────────
 
 class AuthMiddleware(BaseMiddleware):
-    """Reject messages from unauthorized users."""
+    """Reject messages from unauthorized users.
 
-    def __init__(self, owner_chat_id: int) -> None:
+    Fail-closed: an unset owner_chat_id (0) rejects everyone unless
+    `allow_all` is explicitly enabled. The previous behavior — unset == open
+    to all of Telegram — was a fail-open identity boundary on a personal graph.
+    """
+
+    def __init__(self, owner_chat_id: int, allow_all: bool = False) -> None:
         self.owner_chat_id = owner_chat_id
-        if owner_chat_id == 0:
+        self.allow_all     = allow_all
+        if owner_chat_id == 0 and allow_all:
             log.warning("auth.open_mode",
-                        hint="MYCELIUM_TELEGRAM__OWNER_CHAT_ID not set — bot accepts all users")
+                        hint="MYCELIUM_TELEGRAM__ALLOW_ALL_USERS=true — "
+                             "bot accepts ALL users (insecure)")
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
     ) -> Any:
-        if (
-            isinstance(event, Message)
-            and self.owner_chat_id != 0
-            and event.chat.id != self.owner_chat_id
-        ):
-            log.warning("auth.rejected", chat_id=event.chat.id)
-            await event.answer("Unauthorized.")
-            return None
+        if isinstance(event, Message):
+            if self.owner_chat_id == 0:
+                if not self.allow_all:
+                    log.error("auth.no_owner", chat_id=event.chat.id)
+                    await event.answer(
+                        "Bot is not configured. Set MYCELIUM_TELEGRAM__OWNER_CHAT_ID.",
+                    )
+                    return None
+                # allow_all explicitly enabled — fall through
+            elif event.chat.id != self.owner_chat_id:
+                log.warning("auth.rejected", chat_id=event.chat.id)
+                await event.answer("Unauthorized.")
+                return None
         return await handler(event, data)
 
 
@@ -104,6 +116,11 @@ async def _remove_reaction(msg: Message) -> None:
 
 _COALESCE_DELAY = 0.5  # seconds to wait for more messages after last buffered
 
+# Control commands bypass buffering entirely: /abort exists to interrupt the
+# operation that HOLDS the lock — buffering it behind that same lock made it
+# structurally unable to ever fire (audit C4).
+_CONTROL_COMMANDS = ("/abort",)
+
 
 class SequentialMiddleware(BaseMiddleware):
     """Process messages sequentially per chat. Coalesce queued messages.
@@ -111,11 +128,23 @@ class SequentialMiddleware(BaseMiddleware):
     While a handler is running for a chat, incoming messages are buffered.
     When the handler finishes, buffered messages are merged into one
     and processed as a single request (collect mode).
+
+    Owns the per-chat serialization contract: every agent entry point —
+    including out-of-band ones like the media-batch flush — must serialize
+    through chat_lock(); bypassing it lets two agent runs overlap (audit C5).
     """
 
     def __init__(self) -> None:
         self._locks:   dict[int, asyncio.Lock]        = defaultdict(asyncio.Lock)
         self._buffers: dict[int, list[Message]]        = defaultdict(list)
+
+    def chat_lock(self, chat_id: int) -> asyncio.Lock:
+        """Per-chat lock for out-of-band agent entry points (batch flush)."""
+        return self._locks[chat_id]
+
+    def clear(self, chat_id: int) -> int:
+        """Drop buffered messages (after /abort). Returns count dropped."""
+        return len(self._buffers.pop(chat_id, []))
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any],
@@ -124,7 +153,11 @@ class SequentialMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         chat_id = event.chat.id
-        lock    = self._locks[chat_id]
+        text    = (event.text or "").strip().lower()
+        if text.startswith(_CONTROL_COMMANDS):
+            return await handler(event, data)
+
+        lock = self._locks[chat_id]
 
         # Lock busy — buffer for coalescing, don't block
         if lock.locked():

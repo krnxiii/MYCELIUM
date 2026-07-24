@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +23,21 @@ log = structlog.get_logger()
 _SKIP_PREFIXES = (".", "_")
 _BINARY_EXTS   = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                   ".mp3", ".wav", ".ogg", ".mp4", ".mov", ".zip"}
+
+
+def _safe_vault_path(vault: VaultStorage, entry_path: str) -> Path:
+    """Resolve entry_path under the vault root, rejecting traversal escapes.
+
+    The vault storage layer guards its own writes, but this write path takes a
+    caller-supplied relative path (e.g. from the vault_link MCP tool). Without
+    containment, '../../foo.md' would escape the vault and overwrite arbitrary
+    files. Resolve and assert the result stays inside root.
+    """
+    root = vault.root.resolve()
+    p    = (root / entry_path).resolve()
+    if p != root and root not in p.parents:
+        raise ValueError(f"path escapes vault root: {entry_path!r}")
+    return p
 
 
 @dataclass
@@ -87,16 +101,22 @@ async def sync(
 
         signal_uuid = meta["signal_uuid"]
 
-        # Check content hash (detect user edits)
+        # Check content hash (detect user edits). Persist the observed
+        # hash — otherwise the same edit (or a legacy raw-bytes hash)
+        # re-reports as changed on every sync forever (audit M29).
         current_hash = fm.content_hash(path)
         stored_hash  = meta.get("content_hash", "")
         if current_hash != stored_hash:
             result.hash_changed.append(rel)
+            vault.set_hash(rel, current_hash)
 
-        await _write_frontmatter(
+        wrote = await _write_frontmatter(
             driver, vault, path, rel, signal_uuid, settings,
         )
-        result.updated += 1
+        if wrote:
+            result.updated += 1
+        else:
+            result.skipped += 1
 
     # Sync binary files — companion .md
     for rel, meta in index.items():
@@ -144,7 +164,7 @@ async def inject_after_ingest(
     original_ext: str = "",
 ) -> None:
     """Inject frontmatter into a freshly ingested file (called from add_file)."""
-    abs_path = vault.root / entry_path
+    abs_path = _safe_vault_path(vault, entry_path)
 
     if abs_path.suffix == ".md" and abs_path.exists():
         await _write_frontmatter(
@@ -276,10 +296,16 @@ async def _write_companion(
 
     if companion.exists():
         text = companion.read_text(encoding="utf-8", errors="replace")
+        if fm.has_unparseable_frontmatter(text):
+            log.warning("obsidian_fm_unparseable_skip",
+                        path=str(companion.relative_to(vault.root)))
+            return
         existing_fm, existing_body = fm.parse(text)
         if existing_body.strip() != f"![[{binary_rel}]]":
             body = existing_body
         merged = fm.merge_mycelium(existing_fm, mycelium_fields)
+        if _unchanged_except_synced(existing_fm, merged):
+            return
     else:
         merged = mycelium_fields
 
@@ -296,8 +322,13 @@ async def _write_frontmatter(
     settings:      ObsidianSettings,
     *,
     original_ext:  str = "",
-) -> None:
-    """Compute and write mycelium frontmatter to a .md file."""
+) -> bool:
+    """Compute and write mycelium frontmatter to a .md file.
+
+    Returns True when the file was written, False when skipped (either the
+    frontmatter block is unparseable — rewriting would corrupt user data —
+    or the content is already up to date).
+    """
     neurons_info = await get_neurons(driver, relative_path)
 
     related_files, similar_files = await asyncio.gather(
@@ -337,6 +368,12 @@ async def _write_frontmatter(
         mycelium_fields["mycelium_original_ext"] = original_ext
 
     text = path.read_text(encoding="utf-8", errors="replace")
+    if fm.has_unparseable_frontmatter(text):
+        # The file starts with '---' but the block doesn't parse — a
+        # rewrite would prepend a SECOND frontmatter block above the
+        # user's real one. Never rewrite what we can't parse (audit M31).
+        log.warning("obsidian_fm_unparseable_skip", path=relative_path)
+        return False
     existing_fm, body = fm.parse(text)
 
     # Preserve existing mycelium_original_ext if not overriding
@@ -344,9 +381,22 @@ async def _write_frontmatter(
         mycelium_fields["mycelium_original_ext"] = existing_fm["mycelium_original_ext"]
 
     merged = fm.merge_mycelium(existing_fm, mycelium_fields)
+    if _unchanged_except_synced(existing_fm, merged):
+        # Only the sync timestamp would change — skip the write to avoid
+        # per-sync mtime churn for Obsidian Sync / iCloud / git.
+        return False
     path.write_text(fm.render(merged, body), encoding="utf-8")
 
     log.debug("obsidian_fm_written", path=str(path.relative_to(vault.root)))
+    return True
+
+
+def _unchanged_except_synced(old_fm: dict, new_fm: dict) -> bool:
+    """True when the two frontmatter dicts differ only in mycelium_synced."""
+    drop = "mycelium_synced"
+    a = {k: v for k, v in old_fm.items() if k != drop}
+    b = {k: v for k, v in new_fm.items() if k != drop}
+    return a == b
 
 
 def _build_related_links(related_files: list) -> list[str]:
@@ -366,12 +416,15 @@ async def _detect_moves(
     vault:  VaultStorage,
     index:  dict[str, dict],
 ) -> int:
-    """Detect file moves via content_hash and update index + graph.
+    """Detect file moves via logical content hash and update index + graph.
 
     Algorithm:
       1. Build hash→(rel_path, signal_uuid) map from index
-      2. Scan vault files not in index
-      3. If file hash matches a missing indexed path → it's a move
+      2. Scan unindexed vault files, group candidates by hash
+      3. Rebind only when the old path is gone AND exactly one candidate
+         matches — identical content is routine in Obsidian (templates,
+         empty notes), and a hash-only last-wins pick silently rebound a
+         Signal to an unrelated file (audit M32).
     """
     # hash → (rel_path, signal_uuid) for indexed files with signals
     hash_map: dict[str, tuple[str, str]] = {}
@@ -389,28 +442,31 @@ async def _detect_moves(
     if not missing:
         return 0
 
-    moved = 0
+    # Collect ALL unindexed candidates per hash before rebinding anything
+    candidates: dict[str, list[str]] = {}
     for path in _vault_all_files(vault):
         rel = str(path.relative_to(vault.root))
         if rel in index:
             continue  # already indexed
+        h = vault.logical_hash(path)
+        if h in hash_map:
+            candidates.setdefault(h, []).append(rel)
 
-        h = fm.content_hash(path) if path.suffix == ".md" else _raw_hash(path)
-        if h not in hash_map:
-            continue
-
+    moved = 0
+    for h, rels in candidates.items():
         old_rel, signal_uuid = hash_map[h]
         if old_rel not in missing:
-            continue  # old file still exists → this is a copy, not move
+            continue  # old file still exists → this is a copy, not a move
+        if len(rels) > 1:
+            log.warning("file_move_ambiguous",
+                        old=old_rel, candidates=rels[:5])
+            continue  # ambiguous — never guess a binding
 
-        # Move detected: old_rel → rel
+        rel      = rels[0]
         new_desc = _source_desc_for(rel)
 
-        # Update vault index
-        old_meta = index.pop(old_rel, {})
-        old_meta["content_hash"] = h
-        index[rel] = old_meta
-        vault._save_index(index)
+        if not vault.rebind_path(old_rel, rel, h):
+            continue
 
         # R7.6 fundamental: update VaultFile.relative_path (primary key
         # of the binding); mirror new source_desc onto Signal as cache.
@@ -447,11 +503,6 @@ def _vault_all_files(vault: VaultStorage) -> list[Path]:
             continue
         files.append(p)
     return sorted(files)
-
-
-def _raw_hash(path: Path) -> str:
-    """SHA-256 of raw file bytes (for non-.md files)."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _build_similar_links(similar_files: list) -> list[str]:

@@ -182,6 +182,34 @@ class Neo4jDriver(GraphDriver):
                 return await work(_execute)
             return await session.execute_write(_tx_work)
 
+    async def verify_vector_dims(self, expected: int) -> bool:
+        """Compare live vector-index dimensions against the configured
+        embedding size. A mismatch makes every vector query fail — and those
+        failures surface only as per-channel warnings in search, so without
+        this startup check the system silently degrades to BM25-only.
+        """
+        try:
+            rows = await self.execute_query(
+                "SHOW VECTOR INDEXES YIELD name, options "
+                "RETURN name, options",
+            )
+        except Exception as e:
+            log.warning("vector_dims_check_failed", error=str(e))
+            return True  # older Neo4j without SHOW VECTOR INDEXES
+        ok = True
+        for r in rows:
+            cfg  = (r.get("options") or {}).get("indexConfig", {})
+            dims = cfg.get("vector.dimensions")
+            if dims is not None and dims != expected:
+                log.error(
+                    "vector_dims_mismatch",
+                    index=r["name"], index_dims=dims, configured=expected,
+                    hint="vector search channels will return nothing; "
+                         "re-embed or recreate indexes",
+                )
+                ok = False
+        return ok
+
     async def build_indices(self) -> None:
         """Create all constraints + indexes (idempotent)."""
         for stmt in ALL_SCHEMA:
@@ -192,8 +220,10 @@ class Neo4jDriver(GraphDriver):
         for stmt in MIGRATIONS:
             try:
                 await self.execute_query(stmt)
-            except Exception:
-                pass  # migration already applied or no matching nodes
+            except Exception as e:
+                # Usually idempotent (already applied / no matching nodes), but
+                # log so a genuinely broken migration is not silently swallowed.
+                log.warning("migration_skipped", stmt=stmt[:80], error=str(e))
         log.info("schema_initialized", count=len(ALL_SCHEMA))
 
     async def verify_schema(self) -> tuple[bool, list[str]]:

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import structlog
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from mycelium.config import Settings, load_settings
 from mycelium.core.models import SignalType
@@ -49,9 +50,35 @@ from mycelium.utils.decay import (
     cypher_effective_weight,
     effective_weight_from_data,
 )
+from mycelium.utils.trust import neutralize, neutralize_tree
 
 log = structlog.get_logger()
 mcp = FastMCP("mycelium")
+
+
+class _TrustShield(Middleware):
+    """Neutralize harness-impersonating markup in every tool response.
+
+    Graph fields (neuron names, synapse facts, signal content) hold
+    ingested third-party text; a stored fake ``<system-reminder>`` would
+    otherwise re-enter the reader agent's context with tool-result
+    authority (indirect prompt injection, OWASP LLM01). Applied at the
+    serialization boundary so every tool — present and future — is covered.
+    """
+
+    async def on_call_tool(
+        self, context: MiddlewareContext, call_next: Any,
+    ) -> Any:
+        result = await call_next(context)
+        for block in getattr(result, "content", None) or []:
+            if isinstance(getattr(block, "text", None), str):
+                block.text = neutralize(block.text)
+        if getattr(result, "structured_content", None) is not None:
+            result.structured_content = neutralize_tree(result.structured_content)
+        return result
+
+
+mcp.add_middleware(_TrustShield())
 
 # ── File-flag gate ────────────────────────────────────────────────
 
@@ -60,9 +87,41 @@ _KNOWLEDGE_DIR = pathlib.Path(__file__).resolve().parent.parent / "knowledge"
 
 _GATE_DIR.mkdir(parents=True, exist_ok=True)
 (_GATE_DIR / ".read_enabled").touch(exist_ok=True)
-# VPS/Docker: auto-enable write (trusted single-user environment)
-if os.environ.get("MYCELIUM_MCP__TRANSPORT") == "streamable-http":
-    (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
+
+
+def _normalize_gates(
+    *,
+    transport: str | None  = None,
+    authed:    bool | None = None,
+) -> None:
+    """Enforce the documented gate default at SERVER START (not import):
+    read=ON, write=OFF — .write_enabled used to persist across restarts,
+    making the documented default true only until the first enable
+    (audit M15).
+
+    Exception: a *blessed* HTTP deployment (authenticated bearer token, or
+    explicit ALLOW_NO_AUTH opt-in) auto-enables write — the token is the
+    real access boundary there. Called from entry points so that merely
+    importing this module (tests, tooling) never toggles gates.
+
+    The entry point passes its resolved ``transport``/``authed`` explicitly
+    (the CLI takes them from flags, not env); when omitted they fall back to
+    the ``MYCELIUM_MCP__*`` environment (the ``python -m`` path).
+    """
+    if transport is None:
+        transport = os.environ.get("MYCELIUM_MCP__TRANSPORT", "")
+    if authed is None:
+        authed = bool(os.environ.get("MYCELIUM_MCP__AUTH_TOKEN"))
+
+    is_http = transport not in ("", "stdio")
+    if is_http:
+        open_optin = os.environ.get(
+            "MYCELIUM_MCP__ALLOW_NO_AUTH", "",
+        ).lower() in ("1", "true", "yes")
+        if authed or open_optin:
+            (_GATE_DIR / ".write_enabled").touch(exist_ok=True)
+            return
+    (_GATE_DIR / ".write_enabled").unlink(missing_ok=True)
 
 
 def _gate(mode: str) -> dict | None:
@@ -74,8 +133,9 @@ def _gate(mode: str) -> dict | None:
 
 # ── Lazy singleton ────────────────────────────────────────────────
 
-_my:       Mycelium | None = None
-_settings: Settings | None = None
+_my:        Mycelium | None      = None
+_settings:  Settings | None      = None
+_init_lock: asyncio.Lock | None  = None  # created lazily (needs a running loop)
 
 # ── R6.2: Async task registry ────────────────────────────────────
 
@@ -86,6 +146,7 @@ _bg_sem = asyncio.Semaphore(2)             # max concurrent extractions
 
 _VAULT_SYNC_DELAY = 5.0  # seconds after last mutation
 _sync_handle: asyncio.TimerHandle | None = None
+_sync_task:   asyncio.Task | None        = None  # strong ref (GC guard)
 
 
 def _schedule_vault_sync() -> None:
@@ -99,9 +160,9 @@ def _schedule_vault_sync() -> None:
 
 def _fire_vault_sync() -> None:
     """Create background task for vault sync."""
-    global _sync_handle
+    global _sync_handle, _sync_task
     _sync_handle = None
-    asyncio.create_task(_run_vault_sync())
+    _sync_task = asyncio.create_task(_run_vault_sync())
 
 
 async def _run_vault_sync() -> None:
@@ -121,31 +182,54 @@ async def _run_vault_sync() -> None:
 
 
 async def _get() -> tuple[Mycelium, Settings]:
-    """Lazy-init Mycelium orchestrator."""
-    global _my, _settings
+    """Lazy-init Mycelium orchestrator (once, under a lock).
+
+    Guards against two races (audit M16):
+      • concurrent first-callers each opening their own driver — the second
+        would leak a connection pool and clobber the singleton;
+      • a build_indices()/verify failure leaving a half-built _my behind that
+        every later call returns as if healthy. Globals are published only
+        after init fully succeeds; the driver is closed on any failure.
+    """
+    global _my, _settings, _init_lock
 
     if _my is not None and _settings is not None:
         return _my, _settings
 
-    _settings = load_settings()
-    driver    = Neo4jDriver(_settings.neo4j)
-    await driver.__aenter__()
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
 
-    clients = MyceliumClients(
-        driver   = driver,
-        embedder = make_embedder(_settings.semantic),
-        llm      = make_llm_client(_settings.llm),
-    )
-    _my = Mycelium(clients, _settings)
-    # Ensure schema (indexes, constraints) — idempotent, safe on every start
-    await driver.build_indices()
-    # R6.2: mark zombie "extracting" signals as failed on restart
-    await driver.execute_query(
-        "MATCH (s:Signal) WHERE s.status = 'extracting' "
-        "SET s.status = 'failed'",
-    )
-    log.info("mcp_initialized")
-    return _my, _settings
+    async with _init_lock:
+        # Double-check: a prior holder of the lock may have finished init.
+        if _my is not None and _settings is not None:
+            return _my, _settings
+
+        settings = load_settings()
+        driver   = Neo4jDriver(settings.neo4j)
+        await driver.__aenter__()
+        try:
+            clients = MyceliumClients(
+                driver   = driver,
+                embedder = make_embedder(settings.semantic),
+                llm      = make_llm_client(settings.llm),
+            )
+            my = Mycelium(clients, settings)
+            # Ensure schema (indexes, constraints) — idempotent, safe on every start
+            await driver.build_indices()
+            await driver.verify_vector_dims(settings.semantic.dimensions)
+            # R6.2: mark zombie "extracting" signals as failed on restart
+            await driver.execute_query(
+                "MATCH (s:Signal) WHERE s.status = 'extracting' "
+                "SET s.status = 'failed'",
+            )
+        except BaseException:
+            # Never publish a partially-built singleton; release the pool.
+            await driver.close()
+            raise
+
+        _my, _settings = my, settings
+        log.info("mcp_initialized")
+        return _my, _settings
 
 
 # ── Tool logic (plain async, testable) ────────────────────────────
@@ -491,14 +575,16 @@ async def impl_search(
     return {
         "neurons": [
             {"uuid": sn.neuron.uuid, "name": sn.neuron.name,
-             "type": sn.neuron.neuron_type, "score": round(sn.score, 4)}
+             "type": sn.neuron.neuron_type, "origin": sn.neuron.origin,
+             "score": round(sn.score, 4)}
             for sn in res.neurons],
         "synapses": [
             {"uuid": ss.synapse.uuid, "fact": ss.synapse.fact,
              "source": ss.source_name, "target": ss.target_name,
-             "score": round(ss.score, 4)}
+             "origin": ss.synapse.origin, "score": round(ss.score, 4)}
             for ss in res.synapses],
-        "signals":     [{"uuid": s.uuid, "name": s.name} for s in res.signals],
+        "signals":     [{"uuid": s.uuid, "name": s.name,
+                         "source_type": s.source_type} for s in res.signals],
         "methods":     [m.value for m in res.methods],
         "duration_ms": ms,
     }
@@ -535,6 +621,7 @@ async def impl_get_neuron(uuid: str) -> dict[str, Any]:
         "expires_at":  str(e.get("expires_at",  "")) or None,
         "expired_at":  str(e.get("expired_at",  "")) or None,
         "weight": round(ew, 4), "attributes": e.get("attributes", "{}"),
+        "origin": e.get("origin", "raw"),
         "out_synapses": [f for f in r["out_synapses"] if f.get("uuid")],
         "in_synapses":  [f for f in r["in_synapses"] if f.get("uuid")],
         "signals":      [s for s in r["signals"] if s.get("uuid")],
@@ -577,16 +664,23 @@ async def impl_add_synapse(
     vec   = await my._c.embedder.embed(fact)
     now   = datetime.now(UTC).isoformat()
 
-    await my._c.driver.execute_query(
+    rows = await my._c.driver.execute_query(
         "MATCH (s:Neuron {uuid: $src}), (t:Neuron {uuid: $tgt}) "
+        "WHERE s.expired_at IS NULL AND t.expired_at IS NULL "
         "CREATE (s)-[:SYNAPSE {"
         "  uuid: $uuid, fact: $fact, fact_embedding: $emb,"
         "  relation: $rel, episodes: [], confidence: $conf,"
-        "  created_at: datetime($now)}]->(t)",
+        "  valid_at: datetime($now),"
+        "  created_at: datetime($now)}]->(t) "
+        "RETURN 1 AS created",
         {"src": source_uuid, "tgt": target_uuid,
          "uuid": suuid, "fact": fact, "emb": vec,
          "rel": relation, "conf": confidence, "now": now},
     )
+    if not rows:
+        # A failed MATCH creates nothing — claiming success with a
+        # fabricated uuid hid every typo'd/expired endpoint (audit M14).
+        return {"error": "source or target neuron not found (or expired)"}
     return {"status": "created", "synapse_uuid": suuid}
 
 
@@ -750,8 +844,18 @@ async def impl_set_owner(name: str) -> dict[str, Any]:
 
 async def impl_get_owner() -> dict[str, Any]:
     my, _ = await _get()
-    await my.init_owner()
-    return {"owner": my.owner_name or None}
+    # Read-only (audit M15): init_owner() MERGEs a neuron — a read-gated
+    # tool must not mutate the graph. Creation belongs to set_owner and
+    # the ingestion pipeline's own init.
+    if my.owner_name:
+        return {"owner": my.owner_name}
+    rows = await my._c.driver.execute_query(
+        "MATCH (e:Neuron) "
+        "WHERE e.expired_at IS NULL "
+        "  AND e.attributes CONTAINS '\"is_owner\": true' "
+        "RETURN e.name AS name LIMIT 1",
+    )
+    return {"owner": rows[0]["name"] if rows else None}
 
 
 async def impl_rethink_neuron(uuid: str) -> dict[str, Any]:
@@ -914,6 +1018,7 @@ async def impl_merge_neurons(
         "MATCH (p:Neuron {uuid: $p}), (s:Neuron {uuid: $s}) "
         "RETURN p.uuid AS p_uuid, p.name AS p_name, "
         "  p.confidence AS p_conf, p.confirmations AS p_cnt, "
+        "  p.attributes AS p_attrs, "
         "  s.uuid AS s_uuid, s.name AS s_name, "
         "  s.confidence AS s_conf, s.confirmations AS s_cnt, "
         "  s.attributes AS s_attrs",
@@ -923,80 +1028,98 @@ async def impl_merge_neurons(
         return {"error": "One or both neurons not found"}
     r = rows[0]
 
-    # 2. Rewire outgoing SYNAPSE: secondary→X → primary→X
-    out = await drv.execute_query(
-        "MATCH (s:Neuron {uuid: $s})-[f:SYNAPSE]->(t:Neuron) "
-        "WHERE NOT EXISTS { "
-        "  MATCH (p:Neuron {uuid: $p})-[ef:SYNAPSE]->(t) "
-        "  WHERE ef.fact = f.fact AND ef.expired_at IS NULL "
-        "} "
-        "WITH f, t "
-        "MATCH (p:Neuron {uuid: $p}) "
-        "CREATE (p)-[nf:SYNAPSE {"
-        "  uuid: f.uuid, fact: f.fact, fact_embedding: f.fact_embedding, "
-        "  relation: f.relation, episodes: f.episodes, "
-        "  confidence: f.confidence, valid_at: f.valid_at, "
-        "  invalid_at: f.invalid_at, created_at: f.created_at"
-        "}]->(t) "
-        "DELETE f "
-        "RETURN count(nf) AS cnt",
-        {"s": secondary_uuid, "p": primary_uuid},
-    )
-    rewired = (out[0]["cnt"] if out else 0)
+    # Merge attributes (primary wins per-key) — s_attrs was fetched and
+    # silently discarded before (audit M13).
+    def _attrs(raw: Any) -> dict[str, Any]:
+        try:
+            return json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            return {}
 
-    # 3. Rewire incoming SYNAPSE: X→secondary → X→primary
-    inc = await drv.execute_query(
-        "MATCH (src:Neuron)-[f:SYNAPSE]->(s:Neuron {uuid: $s}) "
-        "WHERE NOT EXISTS { "
-        "  MATCH (src)-[ef:SYNAPSE]->(p:Neuron {uuid: $p}) "
-        "  WHERE ef.fact = f.fact AND ef.expired_at IS NULL "
-        "} "
-        "WITH f, src "
-        "MATCH (p:Neuron {uuid: $p}) "
-        "CREATE (src)-[nf:SYNAPSE {"
-        "  uuid: f.uuid, fact: f.fact, fact_embedding: f.fact_embedding, "
-        "  relation: f.relation, episodes: f.episodes, "
-        "  confidence: f.confidence, valid_at: f.valid_at, "
-        "  invalid_at: f.invalid_at, created_at: f.created_at"
-        "}]->(p) "
-        "DELETE f "
-        "RETURN count(nf) AS cnt",
-        {"s": secondary_uuid, "p": primary_uuid},
-    )
-    rewired += (inc[0]["cnt"] if inc else 0)
+    merged_attrs = {**_attrs(r["s_attrs"]), **_attrs(r["p_attrs"])}
 
-    # 4. Redirect MENTIONS: Signal→secondary → Signal→primary
-    mentions = await drv.execute_query(
-        "MATCH (sig:Signal)-[m:MENTIONS]->(s:Neuron {uuid: $s}) "
-        "WHERE NOT EXISTS { MATCH (sig)-[:MENTIONS]->(p:Neuron {uuid: $p}) } "
-        "WITH m, sig "
-        "MATCH (p:Neuron {uuid: $p}) "
-        "CREATE (sig)-[:MENTIONS {uuid: m.uuid, created_at: m.created_at}]->(p) "
-        "DELETE m "
-        "RETURN count(*) AS cnt",
-        {"s": secondary_uuid, "p": primary_uuid},
-    )
-    redirected = (mentions[0]["cnt"] if mentions else 0)
-
-    # 5. Consolidate primary
     new_conf, new_rate, new_count = consolidate(
         r["p_conf"] or 1.0, (r["p_cnt"] or 0) + (r["s_cnt"] or 0), sett.decay,
     )
-    await drv.execute_query(
-        "MATCH (p:Neuron {uuid: $uuid}) "
-        "SET p.confidence    = $conf, "
-        "    p.decay_rate    = $rate, "
-        "    p.confirmations = $count, "
-        "    p.freshness     = datetime()",
-        {"uuid": primary_uuid, "conf": new_conf,
-         "rate": new_rate, "count": new_count},
-    )
 
-    # 6. DETACH DELETE secondary (remaining edges are duplicates)
-    await drv.execute_query(
-        "MATCH (s:Neuron {uuid: $uuid}) DETACH DELETE s",
-        {"uuid": secondary_uuid},
-    )
+    rewired    = 0
+    redirected = 0
+
+    # One transaction (audit M13): the old 6-query sequence could crash
+    # mid-merge leaving secondary half-rewired. Rewiring copies the FULL
+    # relationship state via properties(f) — the old explicit copy list
+    # omitted expired_at/invalid_at/origin/contradiction_of, so previously
+    # soft-deleted or superseded facts resurrected as active on primary.
+    async def _work(run: Any) -> None:
+        nonlocal rewired, redirected
+
+        # 2. Rewire outgoing SYNAPSE: secondary→X → primary→X
+        out = await run(
+            "MATCH (s:Neuron {uuid: $s})-[f:SYNAPSE]->(t:Neuron) "
+            "WHERE NOT EXISTS { "
+            "  MATCH (p:Neuron {uuid: $p})-[ef:SYNAPSE]->(t) "
+            "  WHERE ef.fact = f.fact AND ef.expired_at IS NULL "
+            "} "
+            "WITH f, t "
+            "MATCH (p:Neuron {uuid: $p}) "
+            "CREATE (p)-[nf:SYNAPSE]->(t) "
+            "SET nf = properties(f) "
+            "DELETE f "
+            "RETURN count(nf) AS cnt",
+            {"s": secondary_uuid, "p": primary_uuid},
+        )
+        rewired = (out[0]["cnt"] if out else 0)
+
+        # 3. Rewire incoming SYNAPSE: X→secondary → X→primary
+        inc = await run(
+            "MATCH (src:Neuron)-[f:SYNAPSE]->(s:Neuron {uuid: $s}) "
+            "WHERE NOT EXISTS { "
+            "  MATCH (src)-[ef:SYNAPSE]->(p:Neuron {uuid: $p}) "
+            "  WHERE ef.fact = f.fact AND ef.expired_at IS NULL "
+            "} "
+            "WITH f, src "
+            "MATCH (p:Neuron {uuid: $p}) "
+            "CREATE (src)-[nf:SYNAPSE]->(p) "
+            "SET nf = properties(f) "
+            "DELETE f "
+            "RETURN count(nf) AS cnt",
+            {"s": secondary_uuid, "p": primary_uuid},
+        )
+        rewired += (inc[0]["cnt"] if inc else 0)
+
+        # 4. Redirect MENTIONS: Signal→secondary → Signal→primary
+        mentions = await run(
+            "MATCH (sig:Signal)-[m:MENTIONS]->(s:Neuron {uuid: $s}) "
+            "WHERE NOT EXISTS { MATCH (sig)-[:MENTIONS]->(p:Neuron {uuid: $p}) } "
+            "WITH m, sig "
+            "MATCH (p:Neuron {uuid: $p}) "
+            "CREATE (sig)-[:MENTIONS {uuid: m.uuid, created_at: m.created_at}]->(p) "
+            "DELETE m "
+            "RETURN count(*) AS cnt",
+            {"s": secondary_uuid, "p": primary_uuid},
+        )
+        redirected = (mentions[0]["cnt"] if mentions else 0)
+
+        # 5. Consolidate primary (attributes = secondary ∪ primary)
+        await run(
+            "MATCH (p:Neuron {uuid: $uuid}) "
+            "SET p.confidence    = $conf, "
+            "    p.decay_rate    = $rate, "
+            "    p.confirmations = $count, "
+            "    p.attributes    = $attrs, "
+            "    p.freshness     = datetime()",
+            {"uuid": primary_uuid, "conf": new_conf,
+             "rate": new_rate, "count": new_count,
+             "attrs": json.dumps(merged_attrs)},
+        )
+
+        # 6. DETACH DELETE secondary (remaining edges are duplicates)
+        await run(
+            "MATCH (s:Neuron {uuid: $uuid}) DETACH DELETE s",
+            {"uuid": secondary_uuid},
+        )
+
+    await drv.run_in_transaction(_work)
 
     log.info("neurons_merged",
              primary=r["p_name"], secondary=r["s_name"],
@@ -1358,6 +1481,8 @@ async def impl_get_metrics(
     domain: str,
     period: str = "30d",
     field:  str = "",
+    *,
+    allow_write: bool = True,
 ) -> dict[str, Any]:
     """Read metrics from vault and return table + stats."""
     from pathlib import Path as P
@@ -1384,9 +1509,10 @@ async def impl_get_metrics(
             continue
         stats[fname] = compute_stats(entries, fname)
 
-    # update dashboard
+    # update dashboard — a filesystem write; skipped on a read-only gate
+    # (audit M15: read-gated get_metrics must not write vault files)
     dash_path = None
-    if bp.tracking.dashboard and bp.tracking.fields:
+    if allow_write and bp.tracking.dashboard and bp.tracking.fields:
         dash_path = generate_dashboard(
             vault_root, prefix, bp.name, bp.tracking.fields, entries,
             chart_style=bp.tracking.chart_style,
@@ -2025,6 +2151,7 @@ async def get_domain(name: str) -> dict[str, Any]:
 @mcp.tool
 async def create_domain(
     name:            str,
+    slug:            str = "",
     description:     str = "",
     vault_prefix:    str = "",
     anchor_neuron:   str = "",
@@ -2046,6 +2173,7 @@ async def create_domain(
 
     Args:
         name:            Domain name.
+        slug:            URL-safe identifier (default: slugified name).
         description:     Human-readable purpose.
         vault_prefix:    Vault subdirectory (e.g., "health/blood_tests/").
         anchor_neuron:   Hub neuron name in graph.
@@ -2060,10 +2188,23 @@ async def create_domain(
         chart_style_json: JSON chart style: {"type","color","show_point","point_size","height"}.
     """
     if g := _gate("write"): return g
+    # Keyword-only: impl_create_domain has `slug` as its 2nd parameter —
+    # positional forwarding shifted every argument one slot (C3).
     return await impl_create_domain(
-        name, description, vault_prefix, anchor_neuron, anchor_type,
-        triggers, skill, focus, neuron_types, tracking_fields,
-        tracking_fields_json, analysis, chart_style_json,
+        name                 = name,
+        slug                 = slug,
+        description          = description,
+        vault_prefix         = vault_prefix,
+        anchor_neuron        = anchor_neuron,
+        anchor_type          = anchor_type,
+        triggers             = triggers,
+        skill                = skill,
+        focus                = focus,
+        neuron_types         = neuron_types,
+        tracking_fields      = tracking_fields,
+        tracking_fields_json = tracking_fields_json,
+        analysis             = analysis,
+        chart_style_json     = chart_style_json,
     )
 
 
@@ -2150,7 +2291,10 @@ async def get_metrics(
         field:  Filter to specific field (optional, default: all).
     """
     if g := _gate("read"): return g
-    return await impl_get_metrics(domain, period, field)
+    return await impl_get_metrics(
+        domain, period, field,
+        allow_write=_gate("write") is None,
+    )
 
 
 @mcp.tool
@@ -2173,6 +2317,8 @@ def domains_resource() -> str:
 
     Use before ingestion to check if a matching domain exists.
     """
+    if _gate("read"):
+        return "MYCELIUM read access is disabled. Run /mycelium-on."
     return to_compact_list(load_domains())
 
 
@@ -2185,6 +2331,8 @@ def schema_resource() -> str:
 @mcp.resource("mycelium://stats")
 async def stats_resource() -> str:
     """Current graph statistics."""
+    if _gate("read"):
+        return "MYCELIUM read access is disabled. Run /mycelium-on."
     try:
         h = await impl_health()
         return (
@@ -2204,6 +2352,8 @@ async def context_resource() -> str:
     Use before extraction to check what already exists and avoid duplicates.
     Cheaper than calling health() + list_neurons() separately.
     """
+    if _gate("read"):
+        return "MYCELIUM read access is disabled. Run /mycelium-on."
     try:
         my, _ = await _get()
         drv = my._c.driver
@@ -2469,7 +2619,9 @@ async def obsidian_sync(
     into the knowledge graph and re-sync all frontmatter.
 
     Requires obsidian.enabled = true in config."""
-    if err := _gate("read"):
+    # Write-gated (audit M15): sync mutates the graph (move detection) and
+    # rewrites vault files — it is not a read operation.
+    if err := _gate("write"):
         return err
     my, settings = await _get()
     if not settings.obsidian.enabled:
@@ -2532,10 +2684,17 @@ async def _ingest_unindexed(
         if not abs_path.exists():
             continue
         try:
-            # Register in vault index if missing (no copy — file is already in vault)
+            # Register in vault index if missing (no copy — file is already
+            # in vault). register() indexes THIS path even when the content
+            # duplicates another entry — the old return-the-original
+            # behavior let every ingest run rebind the original file's
+            # signal_uuid and mint a duplicate Signal (audit C7).
             entry = vault.get_by_path(rel_path)
             if not entry:
                 entry = vault.register(rel_path)
+            if entry is None or entry.relative_path != rel_path:
+                errors.append(f"{rel_path}: registration failed")
+                continue
 
             content = vault.extract_text(entry)
             if not content:
@@ -2549,6 +2708,15 @@ async def _ingest_unindexed(
                 source_desc = f"file:{entry.relative_path}",
             )
             vault.update_signal_uuid(entry.relative_path, signal.uuid)
+            # Graph-level binding at binding time (audit M33) — relations
+            # and move detection must not wait for the startup migration.
+            from mycelium.vault.file import bind_signal_to_file
+            await bind_signal_to_file(
+                my._c.driver,
+                signal_uuid   = signal.uuid,
+                relative_path = entry.relative_path,
+                content_hash  = entry.content_hash,
+            )
 
             # Inject frontmatter
             if my._s.obsidian.enabled:
@@ -2589,6 +2757,11 @@ def extraction_resource() -> str:
 
 if __name__ == "__main__":
     from mycelium.config import load_settings as _load
+    _normalize_gates()
+    # Periodic glibc heap trim — the `python -m mycelium.mcp.server` entry
+    # bypassed cli.serve's call, so this container kept the #42 RSS growth.
+    from mycelium.utils.memory import start_periodic_trim
+    start_periodic_trim()
     _mcp_cfg = _load().mcp
     if _mcp_cfg.transport == "stdio":
         mcp.run()

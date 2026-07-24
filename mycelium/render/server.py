@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +25,7 @@ from mycelium.render.queries import (
 )
 
 STATIC = Path(__file__).parent / "static"
+log    = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -35,8 +37,8 @@ async def lifespan(app: FastAPI):  # type: ignore[arg-type]
     for stmt in MIGRATIONS:
         try:
             await app.state.drv.execute_query(stmt)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("migration_skipped", stmt=stmt[:80], error=str(e))
     yield
     await app.state.drv.close()
 
@@ -59,8 +61,10 @@ async def index() -> FileResponse:
 @app.get("/api/graph")
 async def graph() -> dict[str, Any]:
     drv   = _drv()
-    nodes = await drv.execute_query(GRAPH_NODES)
-    edges = await drv.execute_query(GRAPH_EDGES)
+    limit = load_settings().render.max_nodes
+    nodes = await drv.execute_query(GRAPH_NODES, {"limit": limit})
+    ids   = [n["id"] for n in nodes]
+    edges = await drv.execute_query(GRAPH_EDGES, {"ids": ids})
     stats = await drv.execute_query(GRAPH_STATS)
     s     = stats[0] if stats else {"neurons": 0, "synapses": 0}
     return {

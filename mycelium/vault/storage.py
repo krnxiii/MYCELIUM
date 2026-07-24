@@ -1,11 +1,24 @@
-"""VaultStorage: human-readable file storage with content-hash index."""
+"""VaultStorage: human-readable file storage with content-hash index.
+
+Ownership (audit P5, docs/DESIGN_VAULT_OWNERSHIP.txt):
+- ONE hash domain: `logical_hash` — mycelium-stripped text for .md, raw
+  bytes otherwise. Frontmatter injection does not change it.
+- ONE index writer: every mutation goes through `mutate()` (per-root
+  process lock + cross-process flock + atomic write). sync and tend must
+  not touch .index.json directly.
+- Corrupt index raises instead of loading as {} — a wipe is never
+  persisted silently; each save rotates the previous index to .bak.
+"""
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import mimetypes
 import os
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import structlog
@@ -19,6 +32,14 @@ _TEXT_TYPES = {
     "text/plain", "text/markdown", "text/csv",
     "text/html",  "text/xml",
 }
+
+# Per-root in-process locks (one VaultStorage may be instantiated many times)
+_ROOT_LOCKS: dict[str, threading.Lock] = {}
+_ROOT_LOCKS_GUARD = threading.Lock()
+
+
+class VaultIndexCorruptError(RuntimeError):
+    """.index.json exists but cannot be parsed — refuse to proceed."""
 
 
 class VaultEntry(BaseModel):
@@ -48,6 +69,29 @@ class VaultStorage:
     def root(self) -> Path:
         return self._root
 
+    # ── Logical hash (single domain, audit M29) ───────────
+
+    def logical_hash(self, path: Path) -> str:
+        """Content hash in the vault's single hash domain.
+
+        .md → SHA-256 of mycelium-stripped text (stable across frontmatter
+        injection); anything else → SHA-256 of raw bytes.
+        """
+        if path.suffix.lower() == ".md":
+            from mycelium.obsidian import frontmatter as fm
+            return fm.content_hash(path)
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @staticmethod
+    def logical_hash_bytes(data: bytes, name: str) -> str:
+        """Logical hash for in-memory content (same domain as logical_hash)."""
+        if Path(name).suffix.lower() == ".md":
+            from mycelium.obsidian import frontmatter as fm
+            text = data.decode("utf-8", errors="replace")
+            stripped = fm.strip_mycelium(text)
+            return hashlib.sha256(stripped.encode("utf-8")).hexdigest()
+        return hashlib.sha256(data).hexdigest()
+
     # ── Core storage ──────────────────────────────────────
 
     def store(
@@ -75,7 +119,7 @@ class VaultStorage:
             data = source.read_bytes()
             name = name or source.name
 
-        content_hash = hashlib.sha256(data).hexdigest()
+        content_hash = self.logical_hash_bytes(data, name)
 
         # Dedup: same content -> return existing entry.
         # If index points to a missing file (stale entry after external wipe),
@@ -88,9 +132,7 @@ class VaultStorage:
                 return entry
             log.warning("vault_index_stale",
                         hash=content_hash[:16], path=existing_path)
-            index = self._load_index()
-            index.pop(existing_path, None)
-            self._save_index(index)
+            self.mutate(lambda idx: idx.pop(existing_path, None))
 
         # Determine category from MIME if not provided
         if not category:
@@ -122,11 +164,10 @@ class VaultStorage:
             size_bytes    = len(data),
         )
 
-        # Persist to index
-        index = self._load_index()
-        index[rel_path] = {"content_hash": content_hash, "signal_uuid": None}
-        self._save_index(index)
+        def _add(idx: dict) -> None:
+            idx[rel_path] = {"content_hash": content_hash, "signal_uuid": None}
 
+        self.mutate(_add)
         log.info("vault_stored", hash=content_hash[:16], path=rel_path, size=len(data))
         return entry
 
@@ -145,7 +186,8 @@ class VaultStorage:
             return None
 
         abs_path = (self._root / relative_path).resolve()
-        if not str(abs_path).startswith(str(self._root.resolve())):
+        root     = self._root.resolve()
+        if abs_path != root and root not in abs_path.parents:
             return None  # path traversal
         if not abs_path.exists():
             return None
@@ -178,10 +220,7 @@ class VaultStorage:
                 return entry.vault_path.read_text(encoding="utf-8", errors="replace")
             if entry.mime_type == "application/json":
                 return _extract_json(entry.vault_path.read_text(encoding="utf-8"))
-            try:
-                return entry.vault_path.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                return ""
+            return ""
 
     # ── Index operations ──────────────────────────────────
 
@@ -194,31 +233,71 @@ class VaultStorage:
 
     def update_signal_uuid(self, relative_path: str, uuid: str) -> None:
         """Set signal_uuid for an indexed file (called after ingest)."""
-        index = self._load_index()
-        if relative_path in index:
-            index[relative_path]["signal_uuid"] = uuid
-            self._save_index(index)
+        def _set(idx: dict) -> None:
+            if relative_path in idx:
+                idx[relative_path]["signal_uuid"] = uuid
+
+        self.mutate(_set)
+
+    def set_hash(self, relative_path: str, content_hash: str) -> None:
+        """Persist an observed logical hash for an indexed file."""
+        def _set(idx: dict) -> None:
+            if relative_path in idx:
+                idx[relative_path]["content_hash"] = content_hash
+
+        self.mutate(_set)
+
+    def rebind_path(self, old_rel: str, new_rel: str, content_hash: str) -> bool:
+        """Move an index entry to a new path (file move). Returns success."""
+        moved = False
+
+        def _rebind(idx: dict) -> None:
+            nonlocal moved
+            meta = idx.pop(old_rel, None)
+            if meta is None:
+                return
+            meta["content_hash"] = content_hash
+            idx[new_rel] = meta
+            moved = True
+
+        self.mutate(_rebind)
+        return moved
+
+    def drop_entries(self, paths: list[str]) -> int:
+        """Remove index entries (vault_compact). Returns count dropped."""
+        dropped = 0
+
+        def _drop(idx: dict) -> None:
+            nonlocal dropped
+            for p in paths:
+                if idx.pop(p, None) is not None:
+                    dropped += 1
+
+        self.mutate(_drop)
+        return dropped
 
     def register(self, relative_path: str) -> VaultEntry | None:
         """Register an existing vault file in the index (no copy).
 
-        Use for files manually placed in vault by the user.
+        Use for files manually placed in vault by the user. Always indexes
+        THE GIVEN path: a content duplicate of an already-indexed file gets
+        its own entry — returning the original here let obsidian_sync
+        rebind the original's signal_uuid to the copy on every run (C7).
         Returns None if file doesn't exist.
         """
         abs_path = (self._root / relative_path).resolve()
-        if not str(abs_path).startswith(str(self._root.resolve())):
+        root     = self._root.resolve()
+        if abs_path != root and root not in abs_path.parents:
             return None  # path traversal
         if not abs_path.exists():
             return None
 
-        data = abs_path.read_bytes()
-        content_hash = hashlib.sha256(data).hexdigest()
+        content_hash = self.logical_hash(abs_path)
 
-        # Dedup: same content already indexed elsewhere
         existing = self.find_by_hash(content_hash)
         if existing and existing != relative_path:
-            log.debug("vault_register_dedup", hash=content_hash[:16])
-            return self.get_by_path(existing)
+            log.info("vault_register_content_dup",
+                     path=relative_path, duplicate_of=existing)
 
         mime, _ = mimetypes.guess_type(relative_path)
         entry = VaultEntry(
@@ -227,18 +306,18 @@ class VaultStorage:
             relative_path = relative_path,
             original_name = Path(relative_path).name,
             mime_type     = mime or "application/octet-stream",
-            size_bytes    = len(data),
+            size_bytes    = abs_path.stat().st_size,
         )
 
-        index = self._load_index()
-        if relative_path not in index:
-            index[relative_path] = {
-                "content_hash": content_hash,
-                "signal_uuid": None,
-            }
-            self._save_index(index)
-            log.info("vault_registered", path=relative_path)
+        def _add(idx: dict) -> None:
+            if relative_path not in idx:
+                idx[relative_path] = {
+                    "content_hash": content_hash,
+                    "signal_uuid": None,
+                }
 
+        self.mutate(_add)
+        log.info("vault_registered", path=relative_path)
         return entry
 
     @staticmethod
@@ -246,30 +325,69 @@ class VaultStorage:
         """Category from MIME type (optionally scoped by domain + subdomain)."""
         return _mime_category(mime, domain=domain, subdomain=subdomain)
 
-    # ── Internal ──────────────────────────────────────────
+    # ── Internal: single-writer index ─────────────────────
 
     @property
     def _index_path(self) -> Path:
         return self._root / ".index.json"
 
-    def _load_index(self) -> dict[str, dict]:
-        """Load index: {relative_path: {content_hash, signal_uuid}}."""
-        if self._index_path.exists():
-            try:
-                data = json.loads(self._index_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                return {}
-            # Detect old format {hash: {category, original_name}}
-            if data:
-                sample = next(iter(data.values()), None)
-                if isinstance(sample, dict) and "content_hash" not in sample:
-                    log.warning("vault_index_old_format", hint="re-ingest files")
-                    return {}
-            return data
-        return {}
+    def _lock(self) -> threading.Lock:
+        key = str(self._root.resolve())
+        with _ROOT_LOCKS_GUARD:
+            return _ROOT_LOCKS.setdefault(key, threading.Lock())
 
-    def _save_index(self, index: dict) -> None:
+    def mutate(self, fn: Callable[[dict], None]) -> None:
+        """Single-writer load-modify-write of the index.
+
+        Serialized in-process (per-root lock) and cross-process (flock on a
+        sidecar lockfile). Every index mutation in the codebase must go
+        through here — concurrent RMW from sync/store/compact lost entries
+        (audit M34).
+        """
+        lock_path = self._index_path.with_suffix(".json.lock")
         self._root.mkdir(parents=True, exist_ok=True)
+        with self._lock(), open(lock_path, "w") as lockf:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+            try:
+                index = self._load_index()
+                fn(index)
+                self._write_index(index)
+            finally:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+
+    def _load_index(self) -> dict[str, dict]:
+        """Load index: {relative_path: {content_hash, signal_uuid}}.
+
+        Missing file → {}. Corrupt file → VaultIndexCorruptError: loading as {}
+        meant the next save silently persisted a full wipe of all
+        signal↔file bindings (audit M34).
+        """
+        if not self._index_path.exists():
+            return {}
+        try:
+            data = json.loads(self._index_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            raise VaultIndexCorruptError(
+                f"{self._index_path} is unreadable ({e}). Restore it from "
+                f"{self._index_path}.bak or fix it manually — refusing to "
+                "continue with an empty index."
+            ) from e
+        # Detect old format {hash: {category, original_name}}
+        if data:
+            sample = next(iter(data.values()), None)
+            if isinstance(sample, dict) and "content_hash" not in sample:
+                log.warning("vault_index_old_format", hint="re-ingest files")
+                return {}
+        return data
+
+    def _write_index(self, index: dict) -> None:
+        # Rotate previous index to .bak — one-step recovery from a bad write
+        if self._index_path.exists():
+            bak = self._index_path.with_suffix(".json.bak")
+            try:
+                bak.write_bytes(self._index_path.read_bytes())
+            except OSError as e:
+                log.warning("vault_index_bak_failed", error=str(e))
         payload = json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8")
         _atomic_write_bytes(self._index_path, payload)
 
