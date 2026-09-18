@@ -30,7 +30,7 @@ cd "$PROJECT_ROOT"
 # ── Detect compose file + container ─────────────────────────────
 . "$(dirname "${BASH_SOURCE[0]}")/compose-env.sh"
 resolve_compose_env || exit 1
-if ! docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
+if ! docker compose "${COMPOSE_ARGS[@]}" ps --format '{{.Name}}' 2>/dev/null | grep -q mycelium-app; then
     warn "mycelium-app container not running — skipping migration."
     info "If you have no runtime-saved data, you can ignore this."
     exit 0

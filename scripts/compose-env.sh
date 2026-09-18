@@ -1,25 +1,46 @@
 #!/usr/bin/env bash
-# Resolve COMPOSE_FILE + PROFILES for the mycelium stack. Source, then call:
+# Resolve COMPOSE_ARGS + PROFILES for the mycelium stack. Source, then call:
 #   . scripts/compose-env.sh && resolve_compose_env
+#   docker compose "${COMPOSE_ARGS[@]}" "${PROFILES[@]}" ps
 # Priority: MYCELIUM_COMPOSE_FILE env var > .env marker > existing containers
 # (docker compose ps -a — stopped containers count too) > loud failure.
 # Never guess from runtime state alone: with the stack fully down that once
 # deployed the DEV compose on prod. Prod pins the file in .env.
+#
+# The marker may be a ':'-separated list (docker's own COMPOSE_FILE syntax);
+# later files override earlier ones. Deployment facts that must not live in
+# the repo — host paths, per-machine mounts — belong in the trailing file:
+#   MYCELIUM_COMPOSE_FILE=docker-compose.vps.yml:/srv/mycelium/compose.rpi.yml
+# COMPOSE_LABEL is for display only; never pass it to docker with -f.
 
 resolve_compose_env() {
     local marker="${MYCELIUM_COMPOSE_FILE:-}"
     [ -z "$marker" ] && [ -f .env ] && marker="$(sed -n 's/^MYCELIUM_COMPOSE_FILE=//p' .env | tail -1)"
 
+    COMPOSE_ARGS=()
     if [ -n "$marker" ]; then
-        if [ ! -f "$marker" ]; then
-            echo "MYCELIUM_COMPOSE_FILE points to a missing file: $marker" >&2
+        local f
+        local IFS=:
+        for f in $marker; do
+            [ -z "$f" ] && continue
+            if [ ! -f "$f" ]; then
+                echo "MYCELIUM_COMPOSE_FILE points to a missing file: $f" >&2
+                return 1
+            fi
+            COMPOSE_ARGS+=(-f "$f")
+        done
+        unset IFS
+        if [ ${#COMPOSE_ARGS[@]} -eq 0 ]; then
+            echo "MYCELIUM_COMPOSE_FILE is set but names no file: $marker" >&2
             return 1
         fi
-        COMPOSE_FILE="$marker"
+        COMPOSE_LABEL="$marker"
     elif [ -f docker-compose.vps.yml ] && docker compose -f docker-compose.vps.yml ps -a --format '{{.Name}}' 2>/dev/null | grep -q mycelium; then
-        COMPOSE_FILE="docker-compose.vps.yml"
+        COMPOSE_ARGS=(-f docker-compose.vps.yml)
+        COMPOSE_LABEL="docker-compose.vps.yml"
     elif docker compose -f docker-compose.yml ps -a --format '{{.Name}}' 2>/dev/null | grep -q mycelium; then
-        COMPOSE_FILE="docker-compose.yml"
+        COMPOSE_ARGS=(-f docker-compose.yml)
+        COMPOSE_LABEL="docker-compose.yml"
     else
         echo "Cannot determine environment: no mycelium containers exist and no marker set." >&2
         echo "Add MYCELIUM_COMPOSE_FILE=docker-compose.vps.yml (prod) or =docker-compose.yml (dev) to .env and re-run." >&2
@@ -35,7 +56,7 @@ resolve_compose_env() {
         for p in ${profs//,/ }; do PROFILES+=(--profile "$p"); done
     else
         local existing
-        existing="$(docker compose -f "$COMPOSE_FILE" ps -a --format '{{.Name}}' 2>/dev/null)"
+        existing="$(docker compose "${COMPOSE_ARGS[@]}" ps -a --format '{{.Name}}' 2>/dev/null)"
         case "$existing" in *telegram*)     PROFILES+=(--profile telegram) ;; esac
         case "$existing" in *whisper*)      PROFILES+=(--profile voice-whisper) ;; esac
         case "$existing" in *mycelium-app*) PROFILES+=(--profile app) ;; esac

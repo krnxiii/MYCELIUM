@@ -16,9 +16,9 @@ error()   { printf "  \033[0;31m✗${NC}  %s\n" "$1" >&2; }
 . "$(dirname "${BASH_SOURCE[0]}")/compose-env.sh"
 resolve_compose_env || exit 1
 
-COMPOSE_CMD=(docker compose -f "$COMPOSE_FILE" "${PROFILES[@]}")
+COMPOSE_CMD=(docker compose "${COMPOSE_ARGS[@]}" "${PROFILES[@]}")
 
-printf "\n${BOLD}${GREEN}MYCELIUM${NC} update  ${DIM}[${COMPOSE_FILE}${PROFILES[*]:+ ${PROFILES[*]}}]${NC}\n"
+printf "\n${BOLD}${GREEN}MYCELIUM${NC} update  ${DIM}[${COMPOSE_LABEL}${PROFILES[*]:+ ${PROFILES[*]}}]${NC}\n"
 
 # ── Pull ────────────────────────────────────────────────────────
 step "Pulling latest code"
