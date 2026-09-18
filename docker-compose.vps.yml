@@ -61,6 +61,10 @@ services:
       MYCELIUM_LLM__PROVIDER: ${MYCELIUM_LLM__PROVIDER:-cc-cli}
       MYCELIUM_LLM__MODEL: ${MYCELIUM_LLM__MODEL:-sonnet}
       MYCELIUM_LLM__API_KEY: ${MYCELIUM_LLM__API_KEY:-}
+      # cc-cli provider authenticates with this; without it the CLI falls
+      # back to the mounted .credentials.json, which is read-only here and
+      # therefore can never refresh once its OAuth token expires.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       MYCELIUM_MCP__AUTH_TOKEN: ${MYCELIUM_MCP__AUTH_TOKEN:-}
       MYCELIUM_OWNER__NAME: ${MYCELIUM_OWNER__NAME:-}
       MYCELIUM_RENDER__ENABLED: ${MYCELIUM_RENDER__ENABLED:-false}
