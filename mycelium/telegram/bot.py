@@ -666,7 +666,7 @@ async def run_bot() -> None:
 
     # Agent for full mode (claude -p subprocess)
     agent = AgentProcess(model=cfg.llm.model, session_ttl=tg.session_ttl,
-                         timeout=tg.agent_timeout)
+                         timeout=tg.agent_timeout, max_turns=tg.max_turns)
 
     dispatcher = Dispatcher(mcp_client, agent)
 
