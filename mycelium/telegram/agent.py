@@ -71,7 +71,7 @@ class AgentProcess:
     def __init__(
         self,
         model:       str   = "sonnet",
-        max_turns:   int   = 10,
+        max_turns:   int   = 30,
         session_ttl: int   = 14400,
         timeout:     float = 600.0,
     ) -> None:

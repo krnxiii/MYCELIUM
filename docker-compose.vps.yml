@@ -174,7 +174,7 @@ services:
     restart: unless-stopped
 
   # Tailscale mesh VPN: removed — services are exposed on the host node
-  # (z13contabo) via published ports; nothing was routed through this
+  # via published ports; nothing was routed through this
   # container node (no network_mode: service:tailscale), so it only created
   # a redundant tailnet node. Access MCP/Neo4j on the host's tailscale IP.
 
